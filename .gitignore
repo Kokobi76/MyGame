@@ -72,3 +72,48 @@ Thumbs.db
 # Bỏ qua thư mục MyAssets và file meta của nó
 /[Aa]ssets/MyAssets/
 /[Aa]ssets/MyAssets.meta
+
+# ==========================================
+# CẤU HÌNH CỦA CÁC IDE & CODE EDITOR
+# ==========================================
+
+# 1. Visual Studio Code
+.vscode/
+
+# 2. Visual Studio (Windows/Mac)
+.vs/
+*.csproj
+*.unityproj
+*.sln
+*.suo
+*.tmp
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+ExportedObj/
+
+# 3. JetBrains Rider / ReSharper / IntelliJ
+.idea/
+*.sln.DotSettings
+*.sln.DotSettings.user
+*.resharper/
+_ReSharper*/
+*.[Rr]e[Ss]harper
+
+# 4. Xcode (macOS / iOS build)
+*.xcuserdata/
+*.xcworkspace/
+
+# 5. Consulo
+.consulo/
+
+# Bỏ qua luôn các file .meta của các file debug ở trên (Unity tự sinh)
+*.pidb.meta
+*.pdb.meta
+*.mdb.meta
