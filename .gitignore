@@ -117,3 +117,5 @@ _ReSharper*/
 *.pidb.meta
 *.pdb.meta
 *.mdb.meta
+
+*.slnx
