@@ -1,0 +1,29 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 76ae3da8616e61547a2dbe5e73f2cc20, type: 3}
+  m_Name: BoardConfig
+  m_EditorClassIdentifier: Assembly-CSharp::Match3.Data.BoardConfig
+  _width: 10
+  _height: 10
+  _cellSize: 1
+  _tileTypes:
+  - {fileID: 11400000, guid: 78426780804ab724d96e3fadf07ffb69, type: 2}
+  - {fileID: 11400000, guid: 107a3eb5f90d98b4596afd5a1edc3eaa, type: 2}
+  - {fileID: 11400000, guid: e8d043f545b1e6945aa751127361de53, type: 2}
+  - {fileID: 11400000, guid: d18723c46a70ca346b880ac671582936, type: 2}
+  - {fileID: 11400000, guid: 027d1ab57d52e0945a51512768ef23ac, type: 2}
+  - {fileID: 11400000, guid: 8a64dac28ff60af41a3d450fa8af3d8f, type: 2}
+  _minMatchLength: 3
+  _swapDuration: 0.25
+  _fallDuration: 0.3
+  _spawnDuration: 0.25
+  _destroyDuration: 0.2

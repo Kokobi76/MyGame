@@ -1,0 +1,74 @@
+# Thư mục chứa các file sinh tự động của Unity (RẤT QUAN TRỌNG cần bỏ qua)
+/[Ll]ibrary/
+/[Tt]emp/
+/[Oo]bj/
+/[Bb]uild/
+/[Bb]uilds/
+/[Ll]ogs/
+/[Uu]ser[Ss]ettings/
+
+# Bỏ qua các bản ghi bộ nhớ và video (kích thước lớn)
+/[Mm]emoryCaptures/
+/[Rr]ecordings/
+
+# Bỏ qua plugin tự động sinh của Jetbrains Rider
+/[Aa]ssets/Plugins/Editor/JetBrains*
+
+# Thư mục cache của Visual Studio và Gradle
+.vs/
+.gradle/
+
+# Các file project và solution tự động sinh của các IDE (Visual Studio, Rider, VS Code)
+ExportedObj/
+.consulo/
+*.csproj
+*.unityproj
+*.sln
+*.suo
+*.tmp
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+
+# Bỏ qua các file meta của các file debug đã bỏ qua ở trên
+*.pidb.meta
+*.pdb.meta
+*.mdb.meta
+
+# File báo cáo crash của Unity
+sysinfo.txt
+
+# Các file build (không nên đẩy file build lên Git)
+*.apk
+*.aab
+*.unitypackage
+*.app
+
+# File cấu hình Crashlytics tự sinh
+crashlytics-build.properties
+
+# Packed Addressables
+/[Aa]ssets/[Aa]ddressable[Aa]ssets[Dd]ata/*/*.bin*
+
+# Assets Android tự động sinh tạm thời
+/[Aa]ssets/[Ss]treamingAssets/aa.meta
+/[Aa]ssets/[Ss]treamingAssets/aa/*
+
+# Các file rác do Hệ điều hành (Windows/macOS) sinh ra
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Bỏ qua thư mục MyAssets và file meta của nó
+/[Aa]ssets/MyAssets/
+/[Aa]ssets/MyAssets.meta
