@@ -42,10 +42,11 @@ namespace Match3.Battle.Gameplay
     /// <see cref="CharacterState"/>s via <see cref="BattleResolveProcessor"/>,
     /// plays out Slash/Sword attacks visually (queued, one at a time)
     /// through <see cref="AttackVisualController"/> — applying their
-    /// damage only once each object actually connects — and drives turn
-    /// order, including automated moves (Enemy always; Player when
-    /// auto-play is enabled) and the Player's move timer. Player always
-    /// moves first.
+    /// damage only once each object actually connects — spawns floating
+    /// combat text for every effect via
+    /// <see cref="FloatingCombatTextController"/>, and drives turn order,
+    /// including automated moves (Enemy always; Player when auto-play is
+    /// enabled) and the Player's move timer. Player always moves first.
     /// </summary>
     public sealed class BattleController : MonoBehaviour
     {
@@ -59,8 +60,9 @@ namespace Match3.Battle.Gameplay
         [SerializeField] private CharacterConfig _playerConfig;
         [SerializeField] private CharacterConfig _enemyConfig;
 
-        [Header("Attack Visuals")]
+        [Header("Visuals")]
         [SerializeField] private AttackVisualController _attackVisuals;
+        [SerializeField] private FloatingCombatTextController _floatingText;
 
         [Header("Automated Move Pacing")]
         [Tooltip("Delay before an automated side (Enemy, or an auto-playing Player) plays its move — purely for readability, no gameplay effect.")]
@@ -203,6 +205,11 @@ namespace Match3.Battle.Gameplay
                 Debug.LogError("BattleController requires an AttackVisualController reference.", this);
                 return false;
             }
+            if (_floatingText == null)
+            {
+                Debug.LogError("BattleController requires a FloatingCombatTextController reference.", this);
+                return false;
+            }
             return true;
         }
 
@@ -220,6 +227,7 @@ namespace Match3.Battle.Gameplay
             _extraMoveEarnedThisTurn |= outcome.GrantsExtraMove;
 
             OnCharacterStatsChanged(actingSide);
+            SpawnInstantEffectFloatingText(actingSide, outcome);
 
             foreach (AttackAction attack in outcome.Attacks)
             {
@@ -291,7 +299,7 @@ namespace Match3.Battle.Gameplay
                 yield break;
             }
 
-            float perObjectDamage = attack.TotalDamage / Mathf.Max(attack.ObjectCount, 1);
+            int perObjectDamage = ResolveMath.RoundToMeaningfulAmount(attack.TotalDamage / Mathf.Max(attack.ObjectCount, 1));
             if (attack.Kind == AttackKind.Slash)
             {
                 yield return _attackVisuals.PlayRangedSlashAttack(attack.AttackerSide, attack.ObjectCount, () => ApplyAttackDamage(defender, perObjectDamage));
@@ -302,6 +310,12 @@ namespace Match3.Battle.Gameplay
             }
         }
 
+        /// <summary>
+        /// Applies one landed hit's damage. If the defender has a Shield
+        /// Stack, the hit is fully blocked (no HP lost) and the floating
+        /// text shows the shield consumption instead of a damage number —
+        /// there's nothing meaningful to show as "damage" for a blocked hit.
+        /// </summary>
         private void ApplyAttackDamage(CharacterState defender, float damage)
         {
             if (_isBattleOver)
@@ -309,9 +323,22 @@ namespace Match3.Battle.Gameplay
                 return;
             }
 
-            defender.TakeDamage(damage);
+            int shieldStacksBefore = defender.ShieldStack;
+            float appliedDamage = defender.TakeDamage(damage);
+            bool wasBlockedByShield = defender.ShieldStack < shieldStacksBefore;
+
             BattleSide defenderSide = defender == _playerState ? BattleSide.Player : BattleSide.Enemy;
             OnCharacterStatsChanged(defenderSide);
+
+            Vector3 textPosition = _attackVisuals.GetView(defenderSide).TargetPoint;
+            if (wasBlockedByShield)
+            {
+                _floatingText.Spawn(textPosition, FloatingTextKind.ShieldBlock, 1);
+            }
+            else
+            {
+                _floatingText.Spawn(textPosition, FloatingTextKind.Damage, Mathf.Max(Mathf.RoundToInt(appliedDamage), 1));
+            }
 
             if (defender.IsDefeated)
             {
@@ -326,9 +353,10 @@ namespace Match3.Battle.Gameplay
                 return;
             }
 
-            float penaltyDamage = Mathf.Max(_enemyConfig.SwordrainDamage, _enemyConfig.SlashDamage);
+            int penaltyDamage = Mathf.RoundToInt(Mathf.Max(_enemyConfig.SwordrainDamage, _enemyConfig.SlashDamage));
             _playerState.TakeUnblockableDamage(penaltyDamage);
             OnCharacterStatsChanged(BattleSide.Player);
+            _floatingText.Spawn(_attackVisuals.GetView(BattleSide.Player).TargetPoint, FloatingTextKind.Damage, penaltyDamage);
 
             if (_playerState.IsDefeated)
             {
@@ -415,6 +443,29 @@ namespace Match3.Battle.Gameplay
             return difficulty == AiDifficulty.Smart
                 ? new SmartMoveSelector(_tuningConfig.ExtraTurnMatchLength)
                 : new RandomMoveSelector();
+        }
+
+        /// <summary>Spawns floating text for the instant (non-attack) effects of one resolve pass — HP/VHP heal, Mana gain, Shield gain — each only if it actually occurred.</summary>
+        private void SpawnInstantEffectFloatingText(BattleSide side, BattleResolveOutcome outcome)
+        {
+            Vector3 position = _attackVisuals.GetView(side).TargetPoint;
+
+            if (outcome.HpHealed > 0f)
+            {
+                _floatingText.Spawn(position, FloatingTextKind.HpHeal, Mathf.RoundToInt(outcome.HpHealed));
+            }
+            if (outcome.VhpHealed > 0f)
+            {
+                _floatingText.Spawn(position, FloatingTextKind.VhpHeal, Mathf.RoundToInt(outcome.VhpHealed));
+            }
+            if (outcome.ManaGained > 0f)
+            {
+                _floatingText.Spawn(position, FloatingTextKind.ManaGain, Mathf.RoundToInt(outcome.ManaGained));
+            }
+            if (outcome.ShieldCountGained > 0)
+            {
+                _floatingText.Spawn(position, FloatingTextKind.ShieldGain, outcome.ShieldCountGained);
+            }
         }
 
         private void OnCharacterStatsChanged(BattleSide side)

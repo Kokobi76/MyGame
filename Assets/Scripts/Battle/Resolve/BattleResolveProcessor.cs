@@ -16,13 +16,18 @@ namespace Match3.Battle.Resolve
     /// only lands once the attack's visual (melee lunge, projectile
     /// volley) actually reaches the defender.
     ///
+    /// Every calculated amount is rounded to a whole number with a floor
+    /// of 1 via <see cref="ResolveMath"/> — a percentage-of-a-percentage
+    /// formula can easily produce a fraction of a point, which would
+    /// otherwise apply and display as an invisible non-effect.
+    ///
     /// Formula reference (design doc):
     /// - HP tile: Current HP += HpHealPercentPerTile% * MaxHP, per tile.
     /// - VHP tile: Current VHP += VhpHealPercentPerTile% * MaxVHP, per tile.
     /// - Mana tile: Mana += n (flat, capped at MaxMana).
     /// - Shield tile: Shield Count += n, then converts to Shield Stacks.
     /// - Slash tile: Melee = SlashDamage * n. Ranged = SlashDamage * n * ranged%, split across RangedObjectCount objects.
-    /// - Sword tile: SwordrainDamage * n * sword%, split across RangedObjectCount objects, plus a bonus Slash hit sized by the same n at swordTriggeredSlash% damage.
+    /// - Sword tile: SwordrainDamage * n * sword%, fired as n objects (one per Sword tile matched — each therefore deals a constant SwordrainDamage * sword% on its own), plus a bonus Slash hit sized by the same n at swordTriggeredSlash% damage.
     /// </summary>
     public sealed class BattleResolveProcessor
     {
@@ -87,7 +92,8 @@ namespace Match3.Battle.Resolve
                 return;
             }
 
-            float amount = character.Config.MaxHp * (_tuning.HpHealPercentPerTile / 100f) * n;
+            float rawAmount = character.Config.MaxHp * (_tuning.HpHealPercentPerTile / 100f) * n;
+            int amount = ResolveMath.RoundToMeaningfulAmount(rawAmount);
             character.HealHp(amount);
             outcome.AddHpHealed(amount);
         }
@@ -100,7 +106,8 @@ namespace Match3.Battle.Resolve
                 return;
             }
 
-            float amount = character.Config.MaxVhp * (_tuning.VhpHealPercentPerTile / 100f) * n;
+            float rawAmount = character.Config.MaxVhp * (_tuning.VhpHealPercentPerTile / 100f) * n;
+            int amount = ResolveMath.RoundToMeaningfulAmount(rawAmount);
             character.HealVhp(amount);
             outcome.AddVhpHealed(amount);
         }
@@ -113,8 +120,12 @@ namespace Match3.Battle.Resolve
                 return;
             }
 
-            character.AddMana(n);
-            outcome.AddManaGained(n);
+            // Already a whole count of tiles, but routed through
+            // ResolveMath for consistency in case this formula ever
+            // gains a percentage component.
+            int amount = ResolveMath.RoundToMeaningfulAmount(n);
+            character.AddMana(amount);
+            outcome.AddManaGained(amount);
         }
 
         private void ApplyShieldGain(IReadOnlyDictionary<TileKind, int> counts, CharacterState character, BattleResolveOutcome outcome)
@@ -140,7 +151,7 @@ namespace Match3.Battle.Resolve
                 return;
             }
 
-            float damage = CalculateSlashDamage(attacker, n);
+            int damage = ResolveMath.RoundToMeaningfulAmount(CalculateSlashDamage(attacker, n));
             int objectCount = GetSlashObjectCount(attacker);
             outcome.AddAttack(new AttackAction(actingSide, AttackKind.Slash, attacker.Config.AttackType, damage, objectCount));
         }
@@ -153,14 +164,16 @@ namespace Match3.Battle.Resolve
                 return;
             }
 
-            float swordDamage = attacker.Config.SwordrainDamage * n * (_tuning.SwordDamagePercentPerTile / 100f);
-            outcome.AddAttack(new AttackAction(actingSide, AttackKind.Sword, AttackType.Ranged, swordDamage, attacker.Config.RangedObjectCount));
+            float rawSwordDamage = attacker.Config.SwordrainDamage * n * (_tuning.SwordDamagePercentPerTile / 100f);
+            int swordDamage = ResolveMath.RoundToMeaningfulAmount(rawSwordDamage);
+            outcome.AddAttack(new AttackAction(actingSide, AttackKind.Sword, AttackType.Ranged, swordDamage, n));
 
             // Sword tiles also proc a bonus Slash hit, sized by the same
             // Sword tile count (confirmed design decision), at reduced
             // damage — played as a second, separate attack right after.
             float triggeredSlashMultiplier = _tuning.SwordTriggeredSlashDamagePercent / 100f;
-            float triggeredSlashDamage = CalculateSlashDamage(attacker, n) * triggeredSlashMultiplier;
+            float rawTriggeredSlashDamage = CalculateSlashDamage(attacker, n) * triggeredSlashMultiplier;
+            int triggeredSlashDamage = ResolveMath.RoundToMeaningfulAmount(rawTriggeredSlashDamage);
             int slashObjectCount = GetSlashObjectCount(attacker);
             outcome.AddAttack(new AttackAction(actingSide, AttackKind.Slash, attacker.Config.AttackType, triggeredSlashDamage, slashObjectCount));
         }
@@ -169,8 +182,8 @@ namespace Match3.Battle.Resolve
         /// Melee deals a straight SlashDamage*n hit. Ranged spreads
         /// SlashDamage*n*rangedPercent across the character's configured
         /// object count — the total is the same either way; only the
-        /// per-object split (used once the attack visually plays out)
-        /// differs.
+        /// per-object split (rounded again, once the attack visually
+        /// plays out) differs.
         /// </summary>
         private float CalculateSlashDamage(CharacterState attacker, int slashTileCount)
         {

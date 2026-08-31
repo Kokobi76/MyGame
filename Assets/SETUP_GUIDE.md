@@ -263,7 +263,7 @@ Tạo 1 `Canvas` (Screen Space - Overlay là đơn giản nhất), bên trong d�
 | Nút tua game | `Button` + `TMP_Text` con | `Speed Toggle View` | Game Speed Controller, Button, Label |
 | Toggle Auto-play | `Toggle` (UI mặc định của Unity) | `Auto Play Toggle View` | Battle Controller, Toggle |
 
-M��i `Character Hud View`/`Stat Bar View` là component **tái sử dụng** — tạo 1 prefab HUD dùng chung cho cả 2 bên, chỉ đổi `Side` (Player/Enemy) là xong, không cần viết thêm code.
+Mỗi `Character Hud View`/`Stat Bar View` là component **tái sử dụng** — tạo 1 prefab HUD dùng chung cho cả 2 bên, chỉ đổi `Side` (Player/Enemy) là xong, không cần viết thêm code.
 
 Tất cả UI đều tự refresh qua event có sẵn (`CharacterStatsChanged`, `TurnTracker.SideChanged/CycleCompleted`, `MoveTimer.RemainingSecondsChanged`, `GameSpeedController.SpeedChanged`) — không cần Update() polling ở đâu cả.
 
@@ -317,6 +317,45 @@ Trên component `Battle Controller` đã có, gán field mới **Attack Visuals*
 - Toàn bộ animation được xếp hàng đợi (queue) — nếu 1 lượt đánh ăn nhiều loại tile cùng lúc (VD Slash + Sword), các đòn chạy lần lượt chứ không đè lên nhau. **Lượt chỉ thật sự chuyển sang bên kia sau khi toàn bộ animation tấn công của lượt đó chạy xong** (không phải ngay khi board hết cascade).
 - Object bắn ra dùng **Object Pool** (`AttackProjectilePool`, cùng cơ chế `UnityEngine.Pool.ObjectPool<T>` như tile) — không Instantiate/Destroy liên tục.
 
-## 4.9. Giả định mới cần lưu ý
+## 4.9. Floating Combat Text (số bay lên khi trừ/hồi máu, mana, shield)
 
-- Số lượng object của **Sword** dùng chung `Ranged Object Count` của nhân vật (không phải bằng số Sword tile ăn được) — vì trong harder.txt cụm "bắn n object" ở phần mô tả loại tấn công (Cận chiến/Tầm xa) đã nói rõ "số lượng object có thể setup", nên mình hiểu Sword cũng dùng chung khái niệm đó để nhất quán và dễ cân bằng độ dày hình ảnh, thay vì mật độ object thay đổi thất thường theo số tile ăn được mỗi lần. Nếu bạn muốn Sword dùng đúng số tile đã ăn làm số object, báo mình đổi lại (1 dòng).
+### a. Mọi giá trị tính toán giờ là số nguyên, tối thiểu 1
+
+Thêm `ResolveMath.RoundToMeaningfulAmount()` — áp cho **tất cả** giá trị ra từ công thức Tile Resolve (heal HP/VHP, damage Slash/Sword, kể cả phần chia theo từng object khi bắn loạt): làm tròn số nguyên, nếu ra 0 thì ép lên 1. Đây nhiều khả năng chính là lý do bạn "không thấy trừ máu" trước đó — công thức % (0.3%, 0.6%, 5%) nhân với số nhỏ rất dễ ra kết quả như 0.3 hay 0.5, gần như không nhìn thấy được trên thanh máu 100 điểm. Giờ mọi hiệu ứng luôn là số nguyên có ý nghĩa.
+
+### b. Tạo Floating Text Prefab
+
+1. GameObject trống → add component **TextMeshPro - Text** (3D, không phải UI) + component **Floating Text View**.
+2. Chỉnh font size/outline tuỳ ý cho dễ đọc trên nền game.
+3. Kéo thành Prefab, xoá khỏi Scene.
+
+> Lưu ý: dùng **TextMeshPro (3D)** chứ không phải TextMeshPro UGUI, vì text này cần hiển thị tại toạ độ world (ngay trên đầu nhân vật), không nằm trong Canvas.
+
+### c. Tạo GameObject Floating Combat Text Controller
+
+1. GameObject trống, add component **Floating Combat Text Controller**.
+2. Gán `Text Prefab` → prefab vừa tạo. `Text Container` để trống cũng được. Màu cho từng loại (damage/heal HP/heal VHP/mana/shield) đã có default hợp lý, chỉnh lại tuỳ ý.
+
+### d. Gán vào Battle Controller
+
+Field mới **Floating Text** → GameObject Floating Combat Text Controller vừa tạo.
+
+### e. Khi nào text nào xuất hiện
+
+| Tình huống | Text | Vị trí |
+|---|---|---|
+| Ăn HP tile | `+X` (xanh lá) | Trên đầu người vừa đánh |
+| Ăn VHP tile | `+X VHP` (xanh dương nhạt) | Trên đầu người vừa đánh |
+| Ăn Mana tile | `+X MP` (tím) | Trên đầu người vừa đánh |
+| Ăn Shield tile | `+X Shield` (vàng) | Trên đầu người vừa đánh |
+| Object Slash/Sword chạm đối phương, **không** bị chặn | `-X` (đỏ) | Trên đầu người bị đánh, đúng lúc object chạm |
+| Object chạm nhưng **bị Shield Stack chặn** | `-1 Shield` (xám) | Trên đầu người bị đánh — không hiện số damage vì damage = 0, chỉ báo mất 1 shield stack |
+| Hết giờ move, bị Enemy phạt | `-X` (đỏ) | Trên đầu Player |
+
+Text tự bay lên + fade rồi trả về pool (dùng `DOVirtual.Float` để chỉnh alpha thủ công thay vì `TMP_Text.DOFade`, vì `DOFade` cần module DOTween Pro/TMP riêng mà bản Free bạn cài trước đó chưa chắc có — cách này chắc chắn chạy được với DOTween Free).
+
+## 4.10. Cập nhật sau phản hồi (Sword object count, bug object không biến mất)
+
+- **Số object của Sword**: đã sửa lại đúng bằng **số Sword tile ăn được** (n), không dùng `Ranged Object Count` nữa — khớp với công thức, và mỗi object giờ luôn gây đúng `Swordrain Damage * sword%` cố định (vì tổng `SwordrainDamage * n * sword%` chia đều cho đúng n object).
+- **Object không biến mất sau khi trúng đích**: lỗi thật — `flight.OnComplete(...)` (áp damage + trả object về pool) bị chính `AsCoroutine()` gọi sau đó **ghi đè mất** (DOTween: gọi `OnComplete` lần 2 trên cùng 1 tween sẽ thay thế lần 1, không cộng dồn), nên riêng object cuối cùng trong mỗi loạt bắn không bao giờ được release, đứng khựng ở vị trí đối phương. Đã tách hẳn việc "chờ bay xong" và "áp damage + trả pool" ra 1 coroutine riêng cho từng object (`WaitForProjectileImpact`), không còn tween nào bị set `OnComplete` 2 lần.
+- **"Không thấy trừ máu"**: sau khi rà lại toàn bộ pipeline damage, không tìm thấy chỗ nào damage bị bỏ qua/không thực thi — khả năng cao nhất là do công thức % (0.3%, 0.6%, 5%) cho ra kết quả rất nhỏ (VD 0.3, 0.5 điểm) trên thanh máu 100 điểm, gần như không thấy được. Xem mục 4.9.a — giờ mọi giá trị đã ép về số nguyên tối thiểu 1, cộng thêm floating text ở mục 4.9 để thấy rõ từng lần trừ/hồi. Nếu áp dụng 2 thứ này mà vẫn không thấy máu đổi, khả năng là do Slider trong Scene của bạn thiếu gán Fill Rect (lỗi setup UI, không phải lỗi code) — báo mình kiểm tra tiếp.

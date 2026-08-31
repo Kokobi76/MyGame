@@ -78,18 +78,13 @@ namespace Match3.Battle.View
         private IEnumerator PlayVolley(Vector3 from, Vector3 to, int objectCount, Action onEachImpact)
         {
             int count = Mathf.Max(objectCount, 1);
-            Tween lastFlight = null;
+            Coroutine lastImpactRoutine = null;
 
             for (int i = 0; i < count; i++)
             {
                 AttackProjectileView projectile = _projectilePool.Get();
                 Tween flight = projectile.PlayFlight(from, to);
-                flight.OnComplete(() =>
-                {
-                    onEachImpact?.Invoke();
-                    _projectilePool.Release(projectile);
-                });
-                lastFlight = flight;
+                lastImpactRoutine = StartCoroutine(WaitForProjectileImpact(flight, projectile, onEachImpact));
 
                 bool isLastObject = i == count - 1;
                 if (!isLastObject)
@@ -98,7 +93,25 @@ namespace Match3.Battle.View
                 }
             }
 
-            yield return lastFlight.AsCoroutine();
+            yield return lastImpactRoutine;
+        }
+
+        /// <summary>
+        /// Waits for one projectile's flight, then applies its impact and
+        /// releases it back to the pool. Deliberately routed through a
+        /// coroutine rather than <c>Tween.OnComplete</c>: DOTween's
+        /// OnComplete *replaces* any previously registered callback on the
+        /// same tween instead of chaining them, so a projectile whose
+        /// flight is also awaited via <see cref="TweenCoroutineExtensions.AsCoroutine"/>
+        /// (which sets its own OnComplete internally) would silently lose
+        /// this impact/release callback — which is exactly why projectiles
+        /// were staying stuck on screen instead of disappearing.
+        /// </summary>
+        private IEnumerator WaitForProjectileImpact(Tween flight, AttackProjectileView projectile, Action onImpact)
+        {
+            yield return flight.AsCoroutine();
+            onImpact?.Invoke();
+            _projectilePool.Release(projectile);
         }
 
         private void EnsureProjectileContainer()
