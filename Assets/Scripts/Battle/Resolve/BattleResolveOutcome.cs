@@ -18,7 +18,8 @@ namespace Match3.Battle.Resolve
         public float ManaGained { get; private set; }
         public int ShieldCountGained { get; private set; }
         public int ShieldStacksGained { get; private set; }
-        public bool GrantsExtraMove { get; private set; }
+        public bool GrantsExtraMove => ExtraMovesEarned > 0;
+        public int ExtraMovesEarned { get; private set; }
         public IReadOnlyList<AttackAction> Attacks => _attacks;
 
         public void AddHpHealed(float amount) => HpHealed += amount;
@@ -27,6 +28,6 @@ namespace Match3.Battle.Resolve
         public void AddShieldCountGained(int amount) => ShieldCountGained += amount;
         public void AddShieldStacksGained(int amount) => ShieldStacksGained += amount;
         public void AddAttack(AttackAction attack) => _attacks.Add(attack);
-        public void MarkGrantsExtraMove() => GrantsExtraMove = true;
+        public void AddExtraMovesEarned(int count) => ExtraMovesEarned += count;
     }
 }

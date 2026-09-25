@@ -52,9 +52,10 @@ namespace Match3.Battle.Resolve
             ApplySlashDamage(counts, actingSide, actingCharacter, outcome);
             ApplySwordDamage(counts, actingSide, actingCharacter, outcome);
 
-            if (HasExtraMoveMatch(matchResult))
+            int extraMoveCount = CountExtraMoveMatches(matchResult);
+            if (extraMoveCount > 0)
             {
-                outcome.MarkGrantsExtraMove();
+                outcome.AddExtraMovesEarned(extraMoveCount);
             }
 
             return outcome;
@@ -72,16 +73,18 @@ namespace Match3.Battle.Resolve
             return counts;
         }
 
-        private bool HasExtraMoveMatch(MatchSearchResult matchResult)
+        /// <summary>Counts every match group that reaches the extra-turn length — a single move can earn more than one (a multi-group cascade step, or several 4+ matches across a cascade).</summary>
+        private int CountExtraMoveMatches(MatchSearchResult matchResult)
         {
+            int count = 0;
             foreach (MatchGroup group in matchResult.Groups)
             {
                 if (group.Positions.Count >= _tuning.ExtraTurnMatchLength)
                 {
-                    return true;
+                    count++;
                 }
             }
-            return false;
+            return count;
         }
 
         private void ApplyHpHeal(IReadOnlyDictionary<TileKind, int> counts, CharacterState character, BattleResolveOutcome outcome)
@@ -92,7 +95,7 @@ namespace Match3.Battle.Resolve
                 return;
             }
 
-            float rawAmount = character.Config.MaxHp * (_tuning.HpHealPercentPerTile / 100f) * n;
+            float rawAmount = character.MaxHp * (_tuning.HpHealPercentPerTile / 100f) * n;
             int amount = ResolveMath.RoundToMeaningfulAmount(rawAmount);
             character.HealHp(amount);
             outcome.AddHpHealed(amount);
@@ -106,7 +109,7 @@ namespace Match3.Battle.Resolve
                 return;
             }
 
-            float rawAmount = character.Config.MaxVhp * (_tuning.VhpHealPercentPerTile / 100f) * n;
+            float rawAmount = character.MaxVhp * (_tuning.VhpHealPercentPerTile / 100f) * n;
             int amount = ResolveMath.RoundToMeaningfulAmount(rawAmount);
             character.HealVhp(amount);
             outcome.AddVhpHealed(amount);
@@ -164,7 +167,7 @@ namespace Match3.Battle.Resolve
                 return;
             }
 
-            float rawSwordDamage = attacker.Config.SwordrainDamage * n * (_tuning.SwordDamagePercentPerTile / 100f);
+            float rawSwordDamage = attacker.SwordrainDamage * n * (_tuning.SwordDamagePercentPerTile / 100f);
             int swordDamage = ResolveMath.RoundToMeaningfulAmount(rawSwordDamage);
             outcome.AddAttack(new AttackAction(actingSide, AttackKind.Sword, AttackType.Ranged, swordDamage, n));
 
@@ -189,10 +192,10 @@ namespace Match3.Battle.Resolve
         {
             if (attacker.Config.AttackType == AttackType.Melee)
             {
-                return attacker.Config.SlashDamage * slashTileCount;
+                return attacker.SlashDamage * slashTileCount;
             }
 
-            return attacker.Config.SlashDamage * slashTileCount * (_tuning.SlashRangedDamagePercentPerTile / 100f);
+            return attacker.SlashDamage * slashTileCount * (_tuning.SlashRangedDamagePercentPerTile / 100f);
         }
 
         private static int GetSlashObjectCount(CharacterState attacker)

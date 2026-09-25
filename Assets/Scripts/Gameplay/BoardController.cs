@@ -46,6 +46,9 @@ namespace Match3.Gameplay
         /// <summary>Read-only view of the live board state, for AI move selection, UI, or debug tooling.</summary>
         public IReadOnlyBoardModel Board => _boardModel;
 
+        /// <summary>Whether the board is currently idle (not mid-swap or mid-resolve). Used by Battle-layer code (e.g. Skill casting) that needs to know the board itself isn't busy before starting something new.</summary>
+        public bool IsIdle => _stateMachine.CurrentState is IdleState;
+
         public event Action BoardGenerated;
         public event Action<Vector2Int, Vector2Int> TilesSwapped;
         public event Action<MatchSearchResult> MatchesResolved;
@@ -107,6 +110,62 @@ namespace Match3.Gameplay
         public IReadOnlyList<EvaluatedMove> GetAllValidMoves()
         {
             return _swapValidator.GetAllValidMoves(_boardModel, _config);
+        }
+
+        /// <summary>
+        /// Directly destroys the given cells with no match required —
+        /// used by the Skill System's Tiles Skill Destroy Area effect
+        /// (see <c>Match3.Battle.Skills</c>). Deliberately self-contained
+        /// (its own removal/collapse/refill/cascade loop, not sharing
+        /// code with <see cref="ResolveCascadeRoutine"/>) so that method
+        /// and everything else in the normal swap path stay completely
+        /// untouched by this addition. Cells with no tile (already empty)
+        /// are silently ignored; a no-op if every given cell turns out
+        /// empty. Fires <see cref="MatchesResolved"/> for every removal
+        /// pass, same as a real match, so Battle-layer resolve code
+        /// (HP/damage/etc. from whatever tile kinds were destroyed)
+        /// applies identically either way — but deliberately does NOT
+        /// fire <see cref="CascadeCompleted"/>: that event is reserved
+        /// for the normal swap-triggered flow, which
+        /// <c>Match3.Battle.Gameplay.BattleController</c> reacts to by
+        /// completing a move/turn, and a skill-triggered destroy decides
+        /// its own turn completion afterward instead (its Costs Move
+        /// flag). The caller simply awaits this routine to know when the
+        /// board is idle again.
+        /// </summary>
+        public IEnumerator DestroyPositionsRoutine(IReadOnlyList<Vector2Int> positions)
+        {
+            if (!(_stateMachine.CurrentState is IdleState) || positions == null || positions.Count == 0)
+            {
+                yield break;
+            }
+
+            MatchSearchResult forcedResult = BuildForcedDestroyResult(positions);
+            if (!forcedResult.HasMatches)
+            {
+                yield break;
+            }
+
+            _stateMachine.TransitionTo(_resolvingState);
+
+            yield return ClearAndCollapseOnce(forcedResult);
+
+            while (true)
+            {
+                MatchSearchResult matchResult = _matchFinder.FindMatches(_boardModel, _config);
+                if (!matchResult.HasMatches)
+                {
+                    break;
+                }
+                yield return ClearAndCollapseOnce(matchResult);
+            }
+
+            if (!_swapValidator.HasAnyValidMove(_boardModel, _config))
+            {
+                yield return ShuffleBoardRoutine();
+            }
+
+            _stateMachine.TransitionTo(_idleState);
         }
 
         private bool ValidateReferences()
@@ -223,6 +282,54 @@ namespace Match3.Gameplay
             }
 
             OnCascadeCompleted();
+        }
+
+        /// <summary>
+        /// One removal+collapse+refill pass, used only by
+        /// <see cref="DestroyPositionsRoutine"/> — a small, deliberate
+        /// duplicate of the same 3 steps <see cref="ResolveCascadeRoutine"/>
+        /// performs inline, kept as its own method purely so that
+        /// existing method is never touched to add this feature.
+        /// </summary>
+        private IEnumerator ClearAndCollapseOnce(MatchSearchResult matchResult)
+        {
+            yield return _boardView.AnimateMatchedRemoval(matchResult.AllMatchedPositions).AsCoroutine();
+            foreach (Vector2Int position in matchResult.AllMatchedPositions)
+            {
+                _boardModel.SetTile(position, null);
+            }
+            OnMatchesResolved(matchResult);
+
+            CollapseResult collapseResult = _collapseResolver.ResolveCollapseAndRefill(_boardModel, _config);
+            yield return _boardView.AnimateCollapseAndRefill(collapseResult).AsCoroutine();
+        }
+
+        /// <summary>Packages raw destroyed positions into the same MatchSearchResult shape a real match produces, grouped by TypeId, so Battle-layer resolve code (which only cares about "how many of each tile kind cleared") can't tell a forced destroy apart from a real match. Positions with no tile (already empty) are skipped. Orientation is set arbitrarily since nothing downstream reads it for a forced destroy.</summary>
+        private MatchSearchResult BuildForcedDestroyResult(IReadOnlyList<Vector2Int> positions)
+        {
+            Dictionary<int, List<Vector2Int>> positionsByTypeId = new Dictionary<int, List<Vector2Int>>();
+            foreach (Vector2Int position in positions)
+            {
+                Tile tile = _boardModel.GetTile(position);
+                if (tile == null)
+                {
+                    continue;
+                }
+
+                if (!positionsByTypeId.TryGetValue(tile.TypeId, out List<Vector2Int> group))
+                {
+                    group = new List<Vector2Int>();
+                    positionsByTypeId[tile.TypeId] = group;
+                }
+                group.Add(position);
+            }
+
+            List<MatchGroup> groups = new List<MatchGroup>();
+            foreach (KeyValuePair<int, List<Vector2Int>> entry in positionsByTypeId)
+            {
+                groups.Add(new MatchGroup(entry.Value, entry.Key, MatchOrientation.Horizontal));
+            }
+            return new MatchSearchResult(groups);
         }
 
         private IEnumerator ShuffleBoardRoutine()

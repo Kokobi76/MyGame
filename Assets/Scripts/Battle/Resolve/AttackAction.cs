@@ -24,6 +24,19 @@ namespace Match3.Battle.Resolve
         public float TotalDamage { get; }
         public int ObjectCount { get; }
 
+        /// <summary>
+        /// True for Skill-sourced damage — per the design doc, "Shield
+        /// không có tác dụng chặn skill" (Shield has no effect blocking
+        /// skills). Defaults to false, so every tile-triggered Slash/Sword
+        /// attack (built the original way, via the constructor below and
+        /// never touching this property) behaves exactly as before this
+        /// field existed. Only <see cref="Match3.Battle.Skills.SkillDamageResolver"/>
+        /// sets it to true, right after construction — a settable
+        /// property rather than a constructor parameter specifically so
+        /// the constructor itself never had to change.
+        /// </summary>
+        public bool BypassesShield { get; set; }
+
         public AttackAction(BattleSide attackerSide, AttackKind kind, AttackType attackType, float totalDamage, int objectCount)
         {
             AttackerSide = attackerSide;

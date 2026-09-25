@@ -87,11 +87,11 @@ namespace Match3.Battle.UI
 
             if (_hpBar != null)
             {
-                _hpBar.SetValue(state.CurrentHp, state.Config.MaxHp);
+                _hpBar.SetValue(state.CurrentHp, state.MaxHp);
             }
             if (_vhpBar != null)
             {
-                _vhpBar.SetValue(state.CurrentVhp, state.Config.MaxVhp);
+                _vhpBar.SetValue(state.CurrentVhp, state.MaxVhp);
             }
             if (_manaBar != null)
             {
@@ -99,11 +99,11 @@ namespace Match3.Battle.UI
             }
             if (_swordrainText != null)
             {
-                _swordrainText.text = $"Swordrain: {state.Config.SwordrainDamage:0}";
+                _swordrainText.text = $"Swordrain: {state.SwordrainDamage:0}";
             }
             if (_slashText != null)
             {
-                _slashText.text = $"Slash: {state.Config.SlashDamage:0}";
+                _slashText.text = $"Slash: {state.SlashDamage:0}";
             }
             if (_shieldText != null)
             {

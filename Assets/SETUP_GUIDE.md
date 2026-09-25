@@ -359,3 +359,187 @@ Text tự bay lên + fade rồi trả về pool (dùng `DOVirtual.Float` để c
 - **Số object của Sword**: đã sửa lại đúng bằng **số Sword tile ăn được** (n), không dùng `Ranged Object Count` nữa — khớp với công thức, và mỗi object giờ luôn gây đúng `Swordrain Damage * sword%` cố định (vì tổng `SwordrainDamage * n * sword%` chia đều cho đúng n object).
 - **Object không biến mất sau khi trúng đích**: lỗi thật — `flight.OnComplete(...)` (áp damage + trả object về pool) bị chính `AsCoroutine()` gọi sau đó **ghi đè mất** (DOTween: gọi `OnComplete` lần 2 trên cùng 1 tween sẽ thay thế lần 1, không cộng dồn), nên riêng object cuối cùng trong mỗi loạt bắn không bao giờ được release, đứng khựng ở vị trí đối phương. Đã tách hẳn việc "chờ bay xong" và "áp damage + trả pool" ra 1 coroutine riêng cho từng object (`WaitForProjectileImpact`), không còn tween nào bị set `OnComplete` 2 lần.
 - **"Không thấy trừ máu"**: sau khi rà lại toàn bộ pipeline damage, không tìm thấy chỗ nào damage bị bỏ qua/không thực thi — khả năng cao nhất là do công thức % (0.3%, 0.6%, 5%) cho ra kết quả rất nhỏ (VD 0.3, 0.5 điểm) trên thanh máu 100 điểm, gần như không thấy được. Xem mục 4.9.a — giờ mọi giá trị đã ép về số nguyên tối thiểu 1, cộng thêm floating text ở mục 4.9 để thấy rõ từng lần trừ/hồi. Nếu áp dụng 2 thứ này mà vẫn không thấy máu đổi, khả năng là do Slider trong Scene của bạn thiếu gán Fill Rect (lỗi setup UI, không phải lỗi code) — báo mình kiểm tra tiếp.
+
+---
+
+# Phần 5 — Fix bug match 4+ nhiều lần, Stats System (Primal → Main → Battle)
+
+## 5.1. Fix: ăn nhiều match 4+ trong 1 lượt
+
+Trước đây hệ thống chỉ check "lượt này có ít nhất 1 match 4+ hay không" (đúng/sai) — nên ăn 2, 3 hay 5 match-4+ trong cùng 1 lượt vẫn chỉ +1 lượt đi thêm. Đã sửa thành **đếm số lượng** match ≥ `Extra Turn Match Length` trong toàn bộ lượt đánh (kể cả nhiều bước cascade), rồi "để dành" (bank) đúng số đó — mỗi lượt tiêu 1, còn dư thì tiếp tục, ăn thêm match-4+ nữa thì cộng dồn tiếp. Không cần setup gì thêm, tự hoạt động.
+
+## 5.2. Stats System — Primal → Main → Battle Stats
+
+Theo tài liệu `KobiOne_text.txt` bạn gửi, mình đã tách lại:
+- **Primal Stats** (nhập tay trong `Character Config`): Endurance, Strength, Intelligence, Dexterity.
+- **Main Stats** (tự tính, không nhập tay nữa): HP ← Endurance, Attack ← Strength, Magic Attack ← Intelligence, Slash Damage ← Attack, Swordrain Damage ← Magic Attack, Max VHP ← HP.
+- **Battle Stats** (runtime, thay đổi trong trận): Current HP, Current VHP, Mana, Shield Count, Shield Stack — không đổi so với trước.
+
+Công thức derive (mục "công thức tính toán mình tự quyết định" bạn giao) nằm hết trong asset mới **Stat Derivation Config** — 1 asset dùng chung cho mọi nhân vật (không phải setting riêng theo Config để mọi nhân vật scale cùng 1 kiểu, dễ so sánh/cân bằng):
+
+```
+Max HP = Base HP + Endurance * HP per Endurance      (mặc định 50 + Endurance*10)
+Attack = Base Attack + Strength * Attack per Strength  (mặc định 5 + Strength*2)
+Magic Attack = Base Magic Attack + Intelligence * ...  (mặc định 5 + Intelligence*2)
+Slash Damage = Attack * Slash% (mặc định 100% = bằng Attack)
+Swordrain Damage = Magic Attack * Swordrain% (mặc định 100% = bằng Magic Attack)
+Max VHP = Max HP * VHP% (giới hạn Inspector tối đa 50%, đúng rule "Max VHP <= Max HP/2")
+```
+
+Toàn bộ hệ số trên đều chỉnh được trong Inspector, không cần sửa code để cân bằng lại.
+
+**Lưu ý — Dexterity hiện chưa có Main Stat nào**: tài liệu liệt kê Dexterity là Primal Stat nhưng không map sang Main Stat nào cả (khác 3 stat còn lại), nên mình để nguyên là field cấu hình chờ dùng sau, không tự bịa ra công thức.
+
+### Setup
+
+1. **Create > Match3 > Battle > Stat Derivation Config** — tạo 1 asset duy nhất, chỉnh hệ số nếu muốn.
+2. Trên 2 asset `Character Config` (Player/Enemy) đã có: field `Max HP`, `Swordrain Damage`, `Slash Damage`, `Max VHP` **không còn nữa** — thay bằng `Endurance`, `Strength`, `Intelligence`, `Dexterity` (mặc định 10 mỗi loại — chỉnh để 2 bên có độ mạnh yếu khác nhau).
+3. Trên `Battle Controller`, gán field mới **Stat Derivation** → asset vừa tạo.
+
+Mỗi nơi hiển thị/tính toán (UI, damage, debug snapshot) đều tự động đọc theo Main Stat đã derive, không cần sửa gì thêm.
+
+---
+
+# Phần 6 — Buff System
+
+Buff/Debuff/Effect theo `KobiOne_text.txt`. Skill System (nơi thực sự tạo ra các buff object trong lúc chơi) sẽ làm ở lượt sau — phần này là nền tảng, bạn đã có thể gọi buff bằng code/debug ngay để test.
+
+## 6.1. Kiến trúc
+
+- **BuffDefinition** (ScriptableObject) — "công thức" 1 buff: Category (Effect/Buff), Target (Self/Opponent), Duration (Turn/Cycle/Instant/Permanence/Condition), Stacking (Stack/Override/Waiting), và tuỳ Category mà có thêm Control Type (Stun/Recovery Block/Silences/Invincible) hoặc list Stat Modifiers (Slash/Swordrain Damage, +,-,*,/ với số hoặc %).
+- **BuffManager** — mỗi `CharacterState` có 1 cái, quản lý danh sách buff đang active, xử lý stacking khi bị gọi lại, tick duration.
+- `CharacterState.SlashDamage`/`SwordrainDamage` giờ **tự động** chạy qua mọi Buff/Debuff đang active — không cần sửa gì ở `BattleResolveProcessor`, mọi công thức damage đã tự nhận giá trị đã buff.
+
+## 6.2. Duration hoạt động thế nào
+
+- **Turn**: tick sau **mỗi lượt hoàn thành** (kể cả lượt bị Enemy/Player khác đi, không riêng người giữ buff) — đúng tinh thần "Turn: mỗi move loop hoàn thành" trong tài liệu là khái niệm chung cho toàn trận.
+- **Cycle**: tick khi `TurnCycleTracker` báo hết 1 Cycle.
+- **Instant**: tương đương Turn = 1.
+- **Permanence**: không bao giờ tự hết, tồn tại tới hết trận.
+- **Condition**: không tự hết theo Turn/Cycle — code gọi buff phải tự gọi `buffInstance.MarkConditionEnded()` khi điều kiện của nó xảy ra (tài liệu không cho ví dụ cụ thể nên phần này chỉ có sẵn hạ tầng, chưa có điều kiện cụ thể nào cắm vào).
+
+## 6.3. Riêng Stun — 1 quyết định cần lưu ý
+
+Stun **không** tick theo cơ chế Turn chung ở trên — nếu tick chung, Stun 2 lượt có thể hết ngay trong lúc đối phương đang đi (lượt không phải của người bị stun), mất hết ý nghĩa "trừ lượt đối thủ". Mình cho Stun tick **riêng**, chỉ trừ đúng lúc tới phiên người bị stun và bị bỏ qua — `BattleController` tự phát hiện việc này (`ResolveStunSkips`) ngay khi chuẩn bị vào lượt của ai đó: nếu người đó đang bị Stun thì bỏ qua thẳng, không cho input/AI chạy, rồi mới xét tiếp tới lượt kế. Nhờ vậy "Stun 2 lượt" nghĩa đúng là "đối thủ mất đúng 2 lượt đi của họ", bất kể bên kia đi bao nhiêu lượt xen giữa.
+
+## 6.4. Invincible & Recovery Block
+
+- **Invincible**: khi áp dụng, xoá sạch mọi debuff/negative buff hiện có trên người đó, và trong lúc còn hiệu lực thì mọi debuff mới bị chặn thẳng, mọi damage nhận vào (kể cả damage phạt do hết giờ) đều = 0.
+- **Recovery Block**: trong lúc còn hiệu lực, `HealHp`/`HealVhp` gọi vào coi như không có gì xảy ra (0 điểm hồi).
+- **Silences**: đã có cờ `HasControlBuff(ControlBuffType.Silences)` để tra, nhưng **chưa có nơi nào đọc nó** — chờ Skill System (khoá kỹ năng) mới dùng tới.
+
+## 6.5. Tạo buff asset & test thử
+
+**Create > Match3 > Battle > Buff Definition**. Ví dụ tạo buff "AttackBoost": Category = Buff, Target = Self, Duration = Turn (3), Stacking = Stack, thêm 1 Stat Modifier: Stat = Slash Damage, Operation = Add, Value = 20, Is Percentage ✓.
+
+Test nhanh bằng code (chưa có UI/skill gọi buff):
+```csharp
+battleController.ApplyBuff(BattleSide.Player, attackBoostBuffDefinition, BattleSide.Player);
+```
+
+`ApplyBuff(target, definition, source)` là entry point công khai duy nhất để áp buff — đây cũng chính là hàm Skill System sẽ gọi sau này, nên không cần đổi gì khi nối Skill System vào.
+
+## 6.6. Passive Buff — xác nhận ngoài phạm vi
+
+Theo câu trả lời của bạn, Passive Buff gắn với skill tree (chưa có), nên mình **không** implement Passive Buff/skill tree trong phần này. `BuffCategory` hiện chỉ có `Effect` và `Buff` — thêm `PassiveBuff` sau này khi build skill tree không ảnh hưởng gì tới 2 loại đã có.
+
+---
+
+# Phần 7 — Skill System (theo `KobiOne_text.txt` mục SKILL SYSTEM) + UI test Buff/Skill
+
+Phần này build trên nền Buff System ở Phần 6. Đã cập nhật theo phản hồi của bạn — xem mục 7.9 để biết chính xác chỗ nào đổi so với bản đầu.
+
+## 7.1. Nguyên tắc xuyên suốt: không đụng code cũ
+
+Toàn bộ Phần 7 chỉ **thêm file mới** hoặc **thêm dòng/hàm mới vào file cũ** — không có dòng code cũ nào (Core, Buff System, Phase 1-3, animation tấn công...) bị sửa hay xoá. Cụ thể, đúng 4 file cũ có bổ sung, mọi thứ khác trong đó **giữ nguyên y hệt**:
+
+- `AttackAction.cs` — thêm 1 property mới `BypassesShield` (settable, mặc định `false`). Constructor cũ **không đổi 1 ký tự nào** — property được set riêng sau khi tạo object, không qua constructor, nên mọi chỗ gọi `new AttackAction(...)` kiểu cũ (trong `BattleResolveProcessor`) không cần sửa gì và chạy y hệt trước giờ.
+- `CharacterState.cs` — thêm 1 method mới `TrySpendMana(amount)`. Không đụng field/method nào khác.
+- `BoardController.cs` (core, không phải Battle) — thêm 1 property `IsIdle` và 1 method `DestroyPositionsRoutine(...)` (dùng riêng cho Tiles Skill phá bàn cờ). Method này **tự chứa toàn bộ logic riêng** (không gọi vào `ResolveCascadeRoutine` cũ), nên `ResolveCascadeRoutine` và mọi hàm khác trong file giữ nguyên y hệt bản gốc.
+- `BattleController.cs` — thêm các hàm/field mới cho skill casting (`TryCastSkill`, `CanCastSkill`, `CastSkillRoutine`...). `OnEnable`/`OnDisable`/`BoardController_CascadeCompleted` **giữ nguyên y hệt bản gốc** — bản đầu tiên mình từng thêm 1 dòng subscribe thừa vào đây, đã bỏ lại theo phản hồi của bạn (xem 7.9).
+
+`CharacterConfig.cs` — **không đổi gì cả**. Loadout skill (3 slot) nằm ở asset riêng (`SkillLoadout`, mục 7.5) chứ không nhét vào Character Config, để không phải sửa file này.
+
+## 7.2. Kiến trúc (file mới, namespace `Match3.Battle.Skills`)
+
+- **SkillDefinition** (ScriptableObject, giống `BuffDefinition`) — "công thức" 1 skill: Category (Buff Skill / Opponent Skill / Tiles Skill), Requires Mana + Mana Cost, list Buff để áp (tái dùng thẳng asset `BuffDefinition` đã có — Target Self/Opponent đã nằm sẵn trong asset đó), list Damage Modifier (tái dùng thẳng `StatModifier` của Buff System — thêm 1 entry nhắm `Slash Damage` = nguồn sát thương "Slash", thêm entry nhắm `Swordrain Damage` = nguồn "Sword", thêm cả 2 = "Sword + Slash"), Attack Range (Melee/Ranged, chỉ dùng cho Opponent Skill), và riêng Tiles Skill: Objects Attack Opponent Min/Max, Objects Attack Board Min/Max, Destroy Area shape.
+- **SkillLoadout** (ScriptableObject mới, riêng) — bar 3 skill chủ động của 1 nhân vật (mục 7.5).
+- **DestroyAreaResolver** — quy đổi 1 Destroy Area (1x1/2x2/3x3/row/col/special/all) neo tại 1 ô thành tập hợp ô bị phá; roll số "object đánh bàn cờ" rồi neo **ngẫu nhiên, không trùng ô** cho từng object, sau đó **gộp (union)** toàn bộ ô bị ảnh hưởng — 2 vùng gần/chồng nhau tự nhập lại thành 1 vùng phá lớn hơn (mục 7.6).
+- **SkillDamageResolver** — quy đổi list Damage Modifier thành các `AttackAction`, bắn qua đúng pipeline visual Slash/Sword đã có (melee lunge / ranged volley / sword rain) — không cần code visual mới.
+- **SkillRandom** — roll ngẫu nhiên 1 field Min/Max, tách riêng khỏi `SkillDefinition` (giống cách `TileTypeRandomizer` tách khỏi `BoardConfig`) để asset config giữ thuần dữ liệu.
+- **BattleController.TryCastSkill(side, skillDefinition)** — entry point công khai duy nhất, y hệt tinh thần `ApplyBuff`. Trả `false` nếu cast không hợp lệ lúc này — không throw.
+
+## 7.3. 3 loại Skill map vào field nào
+
+| Category | Costs Move | Buffs | Damage Modifiers | Attack Range | Tiles Skill Objects |
+|---|---|---|---|---|---|
+| **Buff Skill** | **Không bao giờ** — cố định theo Category, không phải field chỉnh trong Inspector | Có (mục đích chính) | Để trống | Bỏ qua | Bỏ qua |
+| **Opponent Skill** | **Luôn luôn** | Tuỳ chọn | Slash/Sword/cả 2 | Melee hoặc Ranged (+ số object) | Bỏ qua |
+| **Tiles Skill** | **Luôn luôn** | Chỉ Debuff nhắm Opponent (code tự lọc, xem 7.4) | Slash/Sword/cả 2 — dùng cho phần "object đánh thẳng đối phương" | Bỏ qua (Tiles Skill không có Melee) | Có — xem 7.6 |
+
+`Costs Move` (Turn Count Yes/No trong tài liệu gốc) giờ là **thuộc tính cố định theo Category** (`SkillDefinition.CostsMove` tự tính từ `Category`, không phải ô Inspector nữa) — đúng đúng bảng gốc trong `harder.txt` (Buff Skill = No, Opponent/Tiles Skill = Yes), không thể set sai qua Inspector.
+
+## 7.4. Tiles Skill chỉ tạo Debuff — code tự lọc
+
+Theo yêu cầu của bạn, lúc cast Tiles Skill, mỗi entry trong `Buffs To Apply` chỉ thật sự được áp nếu **vừa Negative vừa nhắm Opponent** — bất kỳ entry nào không thoả (VD lỡ tay gắn 1 buff tốt cho bản thân) sẽ **tự động bị bỏ qua** lúc cast, không báo lỗi, không crash. Opponent Skill và Buff Skill không bị lọc gì cả — buff của chúng luôn áp đúng theo Target đã gán trong asset.
+
+## 7.5. Skill Loadout — tối đa 3 slot chủ động
+
+Mỗi nhân vật có tối đa **3 slot skill chủ động**, nằm ở asset riêng `SkillLoadout` (không nhét vào `CharacterConfig` — xem lý do ở 7.1), tự cắt bớt nếu bạn lỡ kéo quá 3 skill vào list trong Inspector.
+
+### Setup
+
+1. **Create > Match3 > Battle > Skill Loadout** — tạo 2 asset, 1 cho Player 1 cho Enemy (hoặc dùng chung nếu 2 bên học chung skill).
+2. Kéo tối đa 3 asset `SkillDefinition` vào list `Skills` theo đúng thứ tự slot (0, 1, 2).
+3. Trên `Battle Controller`, gán 2 field mới **Player Skill Loadout** / **Enemy Skill Loadout** → 2 asset vừa tạo. Bỏ trống cũng được nếu trận đấu chưa dùng skill.
+
+## 7.6. Tiles Skill — Destroy Area hoạt động thế nào
+
+- Lúc cast, roll ngẫu nhiên 1 số trong [Objects Attack Board Min, Max] → đó là số lần áp dụng Destroy Area shape. **Mỗi lần neo tại 1 ô đang có tile, chọn ngẫu nhiên và không bao giờ trùng ô đã chọn trong cùng lượt cast đó** (đúng yêu cầu "phải random và không trùng nhau"). Toàn bộ ô bị ảnh hưởng qua tất cả các lần áp dụng được **gộp lại** trước khi phá — 2 vùng gần/chồng nhau (VD 2 khối 2x2 sát nhau) tự nhập thành 1 vùng lớn hơn, không phá 2 lần trên cùng 1 ô ("gần nhau thì gộp nổ" theo đúng ý bạn).
+- Ô bị phá theo cách này chạy qua **đúng công thức Tile Resolve đã có** (`BattleResolveProcessor`) y như bị match thường — HP tile bị phá vẫn hồi máu, Sword/Slash tile bị phá vẫn gây damage, cascade tiếp theo do refill tạo ra cũng xử lý tiếp bình thường. Đây là lý do "Phá hủy bàn cờ" trong tài liệu vừa là hiệu ứng phá vừa có thể gây sát thương/hồi máu — tái dùng 100% pipeline Tile Resolve sẵn có, không cần code riêng.
+- Song song đó, roll thêm 1 số trong [Objects Attack Opponent Min, Max] object bắn thẳng vào đối phương, gây damage theo Damage Modifiers — giống Opponent Skill, nhưng luôn kiểu Ranged vì Tiles Skill không có Melee.
+- `Destroy Area = All`: sau khi phá xong, xoá sạch move cộng dồn (extra move) của lượt đó và **luôn luôn** chuyển lượt ngay (bỏ qua Costs Move) — đúng tài liệu.
+- **Shield không chặn damage từ phần "object bắn thẳng đối phương"** của Opponent Skill/Tiles Skill (đúng câu "Shield không có tác dụng chặn skill"). Phần "phá bàn cờ" thì bản chất vẫn là Tile Resolve của tile thường, nên vẫn theo đúng rule Shield cũ của Tile Resolve (không đổi).
+
+## 7.7. Mana & giới hạn số lần cast
+
+- `CharacterState.TrySpendMana(amount)` — trừ Mana nếu đủ, trả `false` nếu không đủ (không trừ âm).
+- **Buff Skill**: dùng **vô hạn lần** trong 1 lượt, miễn còn đủ Mana mỗi lần — không tốn move, không có giới hạn "1 lần/lượt" nào khác ngoài Mana.
+- **Opponent Skill / Tiles Skill**: tối đa **1 lần mỗi move** — tự nhiên có sẵn vì 2 loại này luôn tốn move (Costs Move = Yes cố định), nên vừa cast xong là move đó đã kết thúc/chuyển tiếp (qua `CompleteMove`, y hệt cơ chế move thường bao gồm cả move cộng dồn từ match 4+), không cần code đếm số lần riêng.
+
+## 7.8. UI test Buff & Skill
+
+Component mới `Skill Slot View` (`Match3.Battle.UI`) — 1 nút bấm ứng với 1 slot (0/1/2) của 1 bên, đọc skill từ `SkillLoadout` qua `BattleController.GetSkillLoadout(side)`, tự bật/tắt `interactable` theo `BattleController.CanCastSkill(...)` (đúng lượt, đủ mana, không đang bận...), bấm để gọi `TryCastSkill`.
+
+**Không có UI test buff riêng** — muốn test 1 `BuffDefinition` bất kỳ, bọc nó vào 1 `SkillDefinition` Category = Buff Skill rồi gán vào 1 slot: vì Buff Skill miễn phí move và cast được nhiều lần (mục 7.7), việc này vừa test buff vừa test luôn skill UI cùng lúc, không cần dựng thêm UI riêng.
+
+### Setup
+
+1. Tạo 6 GameObject UI (Button + TMP_Text con) trong Canvas — 3 cho Player, 3 cho Enemy (hoặc chỉ 3 cho Player nếu bạn chỉ cần test 1 bên).
+2. Mỗi cái add component **Skill Slot View**, gán `Battle Controller`, `Side` (Player/Enemy), `Slot Index` (0/1/2 — đúng thứ tự trong `SkillLoadout`), `Button`, `Label`.
+3. Cùng 1 prefab dùng lại cho cả 6 nút — chỉ đổi Side + Slot Index, giống hệt cách `Character Hud View` tái sử dụng ở Phần 3.
+
+## 7.9. Test nhanh bằng code
+
+```csharp
+bool started = battleController.TryCastSkill(BattleSide.Player, someSkillDefinition);
+```
+
+Theo dõi qua các event đã có — `CharacterStatsChanged` (Mana/HP/Shield đổi), `SkillCast` (event mới, bắn ngay khi 1 cast hợp lệ bắt đầu), `BoardController.MatchesResolved`/`CascadeCompleted` (vẫn bắn bình thường khi Tiles Skill phá bàn cờ, y như match thật).
+
+## 7.10. Tạo asset
+
+1. **Create > Match3 > Battle > Skill Definition** — điền Category trước, sau đó chỉ điền đúng nhóm field theo bảng ở 7.3.
+2. **Create > Match3 > Battle > Skill Loadout** — xem 7.5.
+
+Damage Modifiers và Buffs to Apply tái dùng picker asset `StatModifier`/`BuffDefinition` y hệt cách bạn đã làm ở Buff System (Phần 6.5).
+
+## 7.11. Đã sửa theo phản hồi của bạn (so với bản Phần 7 đầu tiên)
+
+- **Vị trí neo Destroy Area**: xác nhận là random — giữ nguyên, nhưng sửa thêm để **không trùng ô** giữa các object trong cùng 1 lần cast (trước đó có thể trùng do random độc lập từng object).
+- **Costs Move** (Turn Count): đổi từ 1 field Inspector tự set thành **cố định theo Category** — đúng bảng gốc trong tài liệu (Buff Skill = No, Opponent/Tiles Skill = Yes), Buff Skill giờ **dùng vô hạn miễn đủ Mana**, không giới hạn "1 skill/lượt" nữa; Opponent/Tiles Skill tự nhiên giới hạn 1 lần/move nhờ luôn tốn move.
+- **Tiles Skill buffs**: từ "quy ước, không ép runtime" → giờ **code tự lọc**, chỉ áp phần Debuff nhắm Opponent.
+- **Bỏ hẳn cơ chế "đã dùng skill trong lượt"** (field + subscribe `SideChanged` ở bản đầu) — không cần nữa nhờ đổi Costs Move như trên, đồng thời giúp `BattleController.OnEnable`/`OnDisable` quay lại y hệt bản gốc (đúng nguyên tắc ở 7.1: không đụng code cũ nếu không thật sự cần).
+- **`BoardController.DestroyPositionsRoutine`**: đổi từ "tách 1 hàm dùng chung với `ResolveCascadeRoutine`" sang **hoàn toàn độc lập, tự chứa toàn bộ logic riêng** — `ResolveCascadeRoutine` gốc giờ không bị đụng tới 1 dòng nào.
+- **`AttackAction.BypassesShield`**: đổi từ tham số constructor sang **property set sau khi tạo** — để constructor gốc không đổi chữ nào.
+- Thêm UI test (`Skill Slot View`) và Skill Loadout (tối đa 3 slot) theo yêu cầu — xem 7.5, 7.8.

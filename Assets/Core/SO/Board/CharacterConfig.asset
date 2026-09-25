@@ -15,10 +15,10 @@ MonoBehaviour:
   _displayName: Character
   _sprite: {fileID: -7657543757582970897, guid: a7025a63dcc46fd4992669356012e384, type: 3}
   _color: {r: 1, g: 0, b: 0, a: 1}
-  _maxHp: 1000
-  _swordrainDamage: 100
-  _slashDamage: 10
+  _endurance: 1000000
+  _strength: 1000
+  _intelligence: 3000
+  _dexterity: 100
   _maxMana: 100
-  _maxVhp: 500
-  _attackType: 1
-  _rangedObjectCount: 10
+  _attackType: 0
+  _rangedObjectCount: 3

@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using Match3.Model;
 using Match3.Matching;
 using Match3.Swap;
 using Match3.Gameplay;
@@ -12,6 +13,8 @@ using Match3.Battle.Resolve;
 using Match3.Battle.Turn;
 using Match3.Battle.AI;
 using Match3.Battle.View;
+using Match3.Battle.Buffs;
+using Match3.Battle.Skills;
 
 namespace Match3.Battle.Gameplay
 {
@@ -47,6 +50,15 @@ namespace Match3.Battle.Gameplay
     /// <see cref="FloatingCombatTextController"/>, and drives turn order,
     /// including automated moves (Enemy always; Player when auto-play is
     /// enabled) and the Player's move timer. Player always moves first.
+    ///
+    /// Also resolves Skill casts via <see cref="TryCastSkill"/> — Buff
+    /// application, direct opponent damage (reusing the same
+    /// attack-queue pipeline as tile-triggered Slash/Sword), and Tiles
+    /// Skill board destruction (via <see cref="BoardController.DestroyPositionsRoutine"/>)
+    /// — sharing the same Mana bookkeeping and, for Opponent/Tiles Skill,
+    /// the same turn-completion path as a normal move. Each side's active
+    /// skills come from its own <see cref="SkillLoadout"/> (up to 3 slots,
+    /// read by <see cref="Match3.Battle.UI.SkillSlotView"/>).
     /// </summary>
     public sealed class BattleController : MonoBehaviour
     {
@@ -57,8 +69,14 @@ namespace Match3.Battle.Gameplay
         [Header("Battle Configuration")]
         [SerializeField] private BattleTileConfig _tileConfig;
         [SerializeField] private BattleTuningConfig _tuningConfig;
+        [SerializeField] private StatDerivationConfig _statDerivation;
         [SerializeField] private CharacterConfig _playerConfig;
         [SerializeField] private CharacterConfig _enemyConfig;
+
+        [Header("Skills")]
+        [Tooltip("Each side's up-to-3 active skill slots. Optional — leave unassigned if this battle doesn't use skills yet.")]
+        [SerializeField] private SkillLoadout _playerSkillLoadout;
+        [SerializeField] private SkillLoadout _enemySkillLoadout;
 
         [Header("Visuals")]
         [SerializeField] private AttackVisualController _attackVisuals;
@@ -89,8 +107,19 @@ namespace Match3.Battle.Gameplay
         private IMoveSelector _playerAutoMoveSelector;
 
         private bool _isPlayerAutoPlayEnabled;
-        private bool _extraMoveEarnedThisTurn;
+        private int _extraMovesEarnedThisTurn;
         private bool _isBattleOver;
+
+        // Skill casting — see TryCastSkill / CastSkillRoutine. A side's
+        // own Costs Move flag (fixed per Category, see SkillDefinition)
+        // already limits Opponent/Tiles Skill to at most 1 per move —
+        // casting one calls CompleteMove, which moves the turn tracker on
+        // to a new move slot (same side via a banked extra move, or the
+        // other side) before another cast could be evaluated. Buff Skill
+        // never costs a move and is intentionally NOT limited beyond
+        // Mana, per spec — so no "already used a skill this turn"
+        // bookkeeping is needed at all.
+        private bool _isCastingSkill;
 
         public CharacterState PlayerState => _playerState;
         public CharacterState EnemyState => _enemyState;
@@ -102,6 +131,7 @@ namespace Match3.Battle.Gameplay
 
         public event Action<BattleSide> CharacterStatsChanged;
         public event Action<BattleSide> BattleEnded;
+        public event Action<BattleSide, SkillDefinition> SkillCast;
 
         private void Awake()
         {
@@ -111,8 +141,8 @@ namespace Match3.Battle.Gameplay
                 return;
             }
 
-            _playerState = new CharacterState(_playerConfig);
-            _enemyState = new CharacterState(_enemyConfig);
+            _playerState = new CharacterState(_playerConfig, _statDerivation);
+            _enemyState = new CharacterState(_enemyConfig, _statDerivation);
             _turnTracker = new TurnCycleTracker(BattleSide.Player);
             _resolveProcessor = new BattleResolveProcessor(_tileConfig, _tuningConfig);
 
@@ -143,12 +173,14 @@ namespace Match3.Battle.Gameplay
         {
             _boardController.MatchesResolved += BoardController_MatchesResolved;
             _boardController.CascadeCompleted += BoardController_CascadeCompleted;
+            _turnTracker.CycleCompleted += TurnTracker_CycleCompleted;
         }
 
         private void OnDisable()
         {
             _boardController.MatchesResolved -= BoardController_MatchesResolved;
             _boardController.CascadeCompleted -= BoardController_CascadeCompleted;
+            _turnTracker.CycleCompleted -= TurnTracker_CycleCompleted;
         }
 
         private void Update()
@@ -178,6 +210,79 @@ namespace Match3.Battle.Gameplay
             }
         }
 
+        /// <summary>
+        /// Applies a buff to one side, sourced by the other side's
+        /// character (or the same side, for a self-buff — pass the same
+        /// value for both). This is the entry point the Skill System
+        /// (see <see cref="TryCastSkill"/>) calls to grant Buff/Debuff/
+        /// Effect objects; also directly usable for testing buffs on
+        /// their own.
+        /// </summary>
+        public void ApplyBuff(BattleSide targetSide, BuffDefinition definition, BattleSide sourceSide)
+        {
+            GetCharacter(targetSide).Buffs.Apply(definition, GetCharacter(sourceSide));
+        }
+
+        /// <summary>The side's assigned active-skill bar (up to 3 slots), or null if that side has none assigned. Read by <see cref="Match3.Battle.UI.SkillSlotView"/>.</summary>
+        public SkillLoadout GetSkillLoadout(BattleSide side)
+        {
+            return side == BattleSide.Player ? _playerSkillLoadout : _enemySkillLoadout;
+        }
+
+        /// <summary>
+        /// Attempts to cast a skill for one side right now. Returns false
+        /// without changing anything if the cast isn't currently legal —
+        /// see <see cref="CanCastSkill"/> for the exact conditions. This
+        /// is the entry point <see cref="Match3.Battle.UI.SkillSlotView"/>
+        /// calls; it is NOT wired into AI move selection — Enemy and an
+        /// auto-playing Player still only ever swap tiles.
+        /// </summary>
+        public bool TryCastSkill(BattleSide casterSide, SkillDefinition skill)
+        {
+            if (!CanCastSkill(casterSide, skill))
+            {
+                return false;
+            }
+
+            StartCoroutine(CastSkillRoutine(casterSide, skill));
+            return true;
+        }
+
+        /// <summary>
+        /// Whether <paramref name="casterSide"/> could legally cast
+        /// <paramref name="skill"/> right now: it must be their turn, the
+        /// battle must still be going, nothing else may currently be
+        /// resolving (another skill cast, an attack sequence, or the
+        /// board itself being mid-swap/mid-cascade), and if the skill
+        /// requires Mana they must have enough. There is no separate
+        /// "already used a skill this turn" check — see the field remarks
+        /// on <see cref="_isCastingSkill"/> for why that's unnecessary.
+        /// Exposed publicly so UI (e.g. a skill button) can grey itself
+        /// out without needing to duplicate this logic.
+        /// </summary>
+        public bool CanCastSkill(BattleSide casterSide, SkillDefinition skill)
+        {
+            if (_isBattleOver || skill == null)
+            {
+                return false;
+            }
+            if (_isCastingSkill || _isProcessingAttackQueue || !_boardController.IsIdle)
+            {
+                return false;
+            }
+            if (_turnTracker.CurrentSide != casterSide)
+            {
+                return false;
+            }
+
+            CharacterState caster = GetCharacter(casterSide);
+            if (skill.RequiresMana && caster.Mana < skill.ManaCost)
+            {
+                return false;
+            }
+            return true;
+        }
+
         private bool ValidateReferences()
         {
             if (_boardController == null)
@@ -193,6 +298,11 @@ namespace Match3.Battle.Gameplay
             if (_tileConfig == null || _tuningConfig == null)
             {
                 Debug.LogError("BattleController requires BattleTileConfig and BattleTuningConfig references.", this);
+                return false;
+            }
+            if (_statDerivation == null)
+            {
+                Debug.LogError("BattleController requires a StatDerivationConfig reference.", this);
                 return false;
             }
             if (_playerConfig == null || _enemyConfig == null)
@@ -224,7 +334,7 @@ namespace Match3.Battle.Gameplay
             CharacterState actingCharacter = GetCharacter(actingSide);
 
             BattleResolveOutcome outcome = _resolveProcessor.Resolve(matchResult, actingSide, actingCharacter);
-            _extraMoveEarnedThisTurn |= outcome.GrantsExtraMove;
+            _extraMovesEarnedThisTurn += outcome.ExtraMovesEarned;
 
             OnCharacterStatsChanged(actingSide);
             SpawnInstantEffectFloatingText(actingSide, outcome);
@@ -259,8 +369,9 @@ namespace Match3.Battle.Gameplay
                 yield break;
             }
 
-            _turnTracker.CompleteMove(_extraMoveEarnedThisTurn);
-            _extraMoveEarnedThisTurn = false;
+            _turnTracker.CompleteMove(_extraMovesEarnedThisTurn);
+            _extraMovesEarnedThisTurn = 0;
+            TickAllBuffsTurn();
 
             ApplyInputGate();
 
@@ -295,28 +406,30 @@ namespace Match3.Battle.Gameplay
 
             if (attack.Kind == AttackKind.Slash && attack.AttackType == AttackType.Melee)
             {
-                yield return _attackVisuals.PlayMeleeAttack(attack.AttackerSide, () => ApplyAttackDamage(defender, attack.TotalDamage));
+                yield return _attackVisuals.PlayMeleeAttack(attack.AttackerSide, () => ApplyAttackDamage(defender, attack.TotalDamage, attack.BypassesShield));
                 yield break;
             }
 
             int perObjectDamage = ResolveMath.RoundToMeaningfulAmount(attack.TotalDamage / Mathf.Max(attack.ObjectCount, 1));
             if (attack.Kind == AttackKind.Slash)
             {
-                yield return _attackVisuals.PlayRangedSlashAttack(attack.AttackerSide, attack.ObjectCount, () => ApplyAttackDamage(defender, perObjectDamage));
+                yield return _attackVisuals.PlayRangedSlashAttack(attack.AttackerSide, attack.ObjectCount, () => ApplyAttackDamage(defender, perObjectDamage, attack.BypassesShield));
             }
             else
             {
-                yield return _attackVisuals.PlaySwordAttack(attack.AttackerSide, attack.ObjectCount, () => ApplyAttackDamage(defender, perObjectDamage));
+                yield return _attackVisuals.PlaySwordAttack(attack.AttackerSide, attack.ObjectCount, () => ApplyAttackDamage(defender, perObjectDamage, attack.BypassesShield));
             }
         }
 
         /// <summary>
         /// Applies one landed hit's damage. If the defender has a Shield
-        /// Stack, the hit is fully blocked (no HP lost) and the floating
-        /// text shows the shield consumption instead of a damage number —
-        /// there's nothing meaningful to show as "damage" for a blocked hit.
+        /// Stack AND this hit doesn't bypass it, the hit is fully blocked
+        /// (no HP lost) and the floating text shows the shield
+        /// consumption instead of a damage number. Skill-sourced hits set
+        /// <paramref name="bypassesShield"/> so Shield never blocks them
+        /// at all, per the design doc.
         /// </summary>
-        private void ApplyAttackDamage(CharacterState defender, float damage)
+        private void ApplyAttackDamage(CharacterState defender, float damage, bool bypassesShield)
         {
             if (_isBattleOver)
             {
@@ -324,8 +437,8 @@ namespace Match3.Battle.Gameplay
             }
 
             int shieldStacksBefore = defender.ShieldStack;
-            float appliedDamage = defender.TakeDamage(damage);
-            bool wasBlockedByShield = defender.ShieldStack < shieldStacksBefore;
+            float appliedDamage = bypassesShield ? defender.TakeUnblockableDamage(damage) : defender.TakeDamage(damage);
+            bool wasBlockedByShield = !bypassesShield && defender.ShieldStack < shieldStacksBefore;
 
             BattleSide defenderSide = defender == _playerState ? BattleSide.Player : BattleSide.Enemy;
             OnCharacterStatsChanged(defenderSide);
@@ -353,10 +466,10 @@ namespace Match3.Battle.Gameplay
                 return;
             }
 
-            int penaltyDamage = Mathf.RoundToInt(Mathf.Max(_enemyConfig.SwordrainDamage, _enemyConfig.SlashDamage));
-            _playerState.TakeUnblockableDamage(penaltyDamage);
-            OnCharacterStatsChanged(BattleSide.Player);
-            _floatingText.Spawn(_attackVisuals.GetView(BattleSide.Player).TargetPoint, FloatingTextKind.Damage, penaltyDamage);
+            // int penaltyDamage = Mathf.RoundToInt(Mathf.Max(_enemyConfig.SwordrainDamage, _enemyConfig.SlashDamage));
+            // _playerState.TakeUnblockableDamage(penaltyDamage);
+            // OnCharacterStatsChanged(BattleSide.Player);
+            // _floatingText.Spawn(_attackVisuals.GetView(BattleSide.Player).TargetPoint, FloatingTextKind.Damage, penaltyDamage);
 
             if (_playerState.IsDefeated)
             {
@@ -365,12 +478,143 @@ namespace Match3.Battle.Gameplay
             }
 
             _turnTracker.ForceAdvanceTurn();
+            TickAllBuffsTurn();
             ApplyInputGate();
 
             if (IsCurrentSideAutomated())
             {
                 StartCoroutine(TakeAutomatedTurnRoutine());
             }
+        }
+
+        /// <summary>
+        /// Resolves one skill cast end to end: spends Mana, applies every
+        /// configured buff (a Tiles Skill only ever applies the ones that
+        /// are both negative and Opponent-targeted — anything else in its
+        /// list is skipped, per the doc's "Tiles Skill only creates
+        /// Debuff" rule), queues and plays out any direct-damage attacks
+        /// (reusing the normal attack queue), then — for a Tiles Skill
+        /// with any Objects-Attack-Board roll — destroys the resolved
+        /// Destroy Area on the board and waits for whatever that triggers
+        /// to settle. Turn completion is decided last: a free (Buff
+        /// Skill) cast never touches the turn tracker at all; Destroy
+        /// Area = All always force-advances (and wipes banked extra
+        /// moves) regardless of Category, per the doc; otherwise the
+        /// skill's own (Category-fixed) Costs Move flag decides.
+        /// </summary>
+        private IEnumerator CastSkillRoutine(BattleSide casterSide, SkillDefinition skill)
+        {
+            _isCastingSkill = true;
+
+            CharacterState caster = GetCharacter(casterSide);
+            BattleSide opponentSide = casterSide.GetOpposite();
+
+            if (skill.RequiresMana && !caster.TrySpendMana(skill.ManaCost))
+            {
+                // Shouldn't happen — CanCastSkill already checked this —
+                // but bail out cleanly rather than half-apply a cast if
+                // it somehow does.
+                _isCastingSkill = false;
+                yield break;
+            }
+
+            OnCharacterStatsChanged(casterSide);
+            OnSkillCast(casterSide, skill);
+
+            _inputController.SetExternalGate(false);
+            _moveTimer.Stop();
+
+            foreach (BuffDefinition buffDefinition in skill.BuffsToApply)
+            {
+                if (skill.Category == SkillCategory.TilesSkill && !(buffDefinition.IsNegative && buffDefinition.Target == BuffTarget.Opponent))
+                {
+                    continue;
+                }
+                BattleSide targetSide = buffDefinition.Target == BuffTarget.Self ? casterSide : opponentSide;
+                ApplyBuff(targetSide, buffDefinition, casterSide);
+            }
+
+            foreach (AttackAction attack in BuildDirectAttacks(casterSide, caster, skill))
+            {
+                _pendingAttacks.Enqueue(attack);
+            }
+            if (!_isProcessingAttackQueue && _pendingAttacks.Count > 0)
+            {
+                StartCoroutine(ProcessAttackQueueRoutine());
+            }
+            yield return new WaitUntil(() => !_isProcessingAttackQueue && _pendingAttacks.Count == 0);
+
+            bool forcedFullBoardClear = false;
+
+            if (!_isBattleOver && skill.Category == SkillCategory.TilesSkill)
+            {
+                HashSet<Vector2Int> destroyPositions = DestroyAreaResolver.ResolveBoardDestroyPositions(skill, _boardController.Board);
+                if (destroyPositions.Count > 0)
+                {
+                    forcedFullBoardClear = skill.DestroyArea == DestroyAreaShape.All;
+
+                    yield return _boardController.DestroyPositionsRoutine(new List<Vector2Int>(destroyPositions));
+
+                    // The forced destroy (and any natural cascade it set
+                    // off) may itself have enqueued Slash/Sword attacks
+                    // via the normal BoardController_MatchesResolved
+                    // handler — wait for those too before finishing.
+                    yield return new WaitUntil(() => !_isProcessingAttackQueue && _pendingAttacks.Count == 0);
+                }
+            }
+
+            if (!_isBattleOver)
+            {
+                if (forcedFullBoardClear)
+                {
+                    _turnTracker.ForceAdvanceTurn();
+                    _extraMovesEarnedThisTurn = 0;
+                    TickAllBuffsTurn();
+                }
+                else if (skill.CostsMove)
+                {
+                    _turnTracker.CompleteMove(_extraMovesEarnedThisTurn);
+                    _extraMovesEarnedThisTurn = 0;
+                    TickAllBuffsTurn();
+                }
+                // else: a free (Buff Skill) cast — turn tracker untouched
+                // entirely; the caster keeps their turn.
+
+                ApplyInputGate();
+
+                if (IsCurrentSideAutomated())
+                {
+                    StartCoroutine(TakeAutomatedTurnRoutine());
+                }
+            }
+
+            _isCastingSkill = false;
+        }
+
+        /// <summary>Builds this skill's direct-opponent-damage AttackActions, if any, from its Damage Modifiers — Opponent Skill uses its own configured Attack Range/object count, Tiles Skill rolls its Objects-Attack-Opponent range and always fires Ranged (it has no Melee option). Buff Skill (or any skill with no Damage Modifiers configured) naturally produces none.</summary>
+        private List<AttackAction> BuildDirectAttacks(BattleSide casterSide, CharacterState caster, SkillDefinition skill)
+        {
+            if (skill.DamageModifiers.Count == 0)
+            {
+                return new List<AttackAction>();
+            }
+
+            if (skill.Category == SkillCategory.OpponentSkill)
+            {
+                return SkillDamageResolver.ResolveAttacks(skill.DamageModifiers, casterSide, caster, skill.AttackRange, skill.RangedObjectCount, bypassesShield: true);
+            }
+
+            if (skill.Category == SkillCategory.TilesSkill)
+            {
+                int objectCount = SkillRandom.RollObjectCount(skill.ObjectsAttackOpponentMin, skill.ObjectsAttackOpponentMax);
+                if (objectCount <= 0)
+                {
+                    return new List<AttackAction>();
+                }
+                return SkillDamageResolver.ResolveAttacks(skill.DamageModifiers, casterSide, caster, AttackType.Ranged, objectCount, bypassesShield: true);
+            }
+
+            return new List<AttackAction>();
         }
 
         private IEnumerator TakeAutomatedTurnRoutine()
@@ -407,6 +651,8 @@ namespace Match3.Battle.Gameplay
         /// <summary>Only lets the Player drag tiles during their own, non-auto-played turn — combined (AND) with the board's own Idle/Busy gate. Also starts/stops the move timer to match.</summary>
         private void ApplyInputGate()
         {
+            ResolveStunSkips();
+
             bool isPlayerManualTurn = _turnTracker.CurrentSide == BattleSide.Player && !_isPlayerAutoPlayEnabled && !_isBattleOver;
             _inputController.SetExternalGate(isPlayerManualTurn);
 
@@ -417,6 +663,33 @@ namespace Match3.Battle.Gameplay
             else
             {
                 _moveTimer.Stop();
+            }
+        }
+
+        /// <summary>
+        /// If the side about to act is Stunned, skips their turn entirely
+        /// (no input, no AI move) and consumes one of Stun's remaining
+        /// turns — repeating in the unlikely case the next side is also
+        /// Stunned. A hard iteration cap guards against any future buff
+        /// interaction accidentally looping forever.
+        /// </summary>
+        private void ResolveStunSkips()
+        {
+            const int maxIterations = 8;
+            int iterations = 0;
+
+            while (!_isBattleOver && iterations < maxIterations)
+            {
+                BuffManager currentSideBuffs = GetCharacter(_turnTracker.CurrentSide).Buffs;
+                if (!currentSideBuffs.HasControlBuff(ControlBuffType.Stun))
+                {
+                    break;
+                }
+
+                currentSideBuffs.ConsumeStunCharge();
+                _turnTracker.ForceAdvanceTurn();
+                TickAllBuffsTurn();
+                iterations++;
             }
         }
 
@@ -431,6 +704,23 @@ namespace Match3.Battle.Gameplay
         private CharacterState GetCharacter(BattleSide side)
         {
             return side == BattleSide.Player ? _playerState : _enemyState;
+        }
+
+        private void TurnTracker_CycleCompleted(int cycleCount)
+        {
+            TickAllBuffsCycle();
+        }
+
+        private void TickAllBuffsTurn()
+        {
+            _playerState.Buffs.TickTurn();
+            _enemyState.Buffs.TickTurn();
+        }
+
+        private void TickAllBuffsCycle()
+        {
+            _playerState.Buffs.TickCycle();
+            _enemyState.Buffs.TickCycle();
         }
 
         private static AiDifficulty RollEnemyAiDifficulty()
@@ -479,15 +769,20 @@ namespace Match3.Battle.Gameplay
             BattleEnded?.Invoke(winningSide);
         }
 
+        private void OnSkillCast(BattleSide side, SkillDefinition skill)
+        {
+            SkillCast?.Invoke(side, skill);
+        }
+
         private void UpdateDebugSnapshot(BattleSide side)
         {
             CharacterState state = GetCharacter(side);
             CharacterDebugSnapshot snapshot = new CharacterDebugSnapshot
             {
                 CurrentHp = state.CurrentHp,
-                MaxHp = state.Config.MaxHp,
+                MaxHp = state.MaxHp,
                 CurrentVhp = state.CurrentVhp,
-                MaxVhp = state.Config.MaxVhp,
+                MaxVhp = state.MaxVhp,
                 Mana = state.Mana,
                 MaxMana = state.Config.MaxMana,
                 ShieldCount = state.ShieldCount,

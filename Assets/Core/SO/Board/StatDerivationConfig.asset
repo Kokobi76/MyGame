@@ -1,0 +1,23 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f2ced95bbfa6c9740a3731e77319eb75, type: 3}
+  m_Name: StatDerivationConfig
+  m_EditorClassIdentifier: Assembly-CSharp::Match3.Battle.Data.StatDerivationConfig
+  _baseHp: 50
+  _hpPerEndurance: 10
+  _baseAttack: 5
+  _attackPerStrength: 2
+  _baseMagicAttack: 5
+  _magicAttackPerIntelligence: 2
+  _slashDamageFromAttackPercent: 100
+  _swordrainDamageFromMagicAttackPercent: 100
+  _maxVhpFromMaxHpPercent: 50
