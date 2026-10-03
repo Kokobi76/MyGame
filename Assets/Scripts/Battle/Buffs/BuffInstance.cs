@@ -17,6 +17,9 @@ namespace Match3.Battle.Buffs
         public int StackCount { get; private set; }
         public bool IsExpired { get; private set; }
 
+        /// <summary>Turns/Cycles left before this expires (meaningless for Permanence/Condition, which never tick down this way) — for UI display, e.g. <see cref="Match3.Battle.UI.BuffListView"/>.</summary>
+        public int RemainingCount => _remainingCount;
+
         public BuffInstance(BuffDefinition definition, CharacterState source)
         {
             Definition = definition;

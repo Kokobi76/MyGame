@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using Match3.Battle.Data;
 using Match3.Battle.Buffs;
+using Match3.Battle.View;
 
 namespace Match3.Battle.Skills
 {
@@ -78,9 +79,17 @@ namespace Match3.Battle.Skills
         [Tooltip("How many objects fly into the board — each one destroys one Destroy Area's worth of tiles, anchored at a random currently-filled cell, never the same cell twice in one cast (no targeting UI yet). Adjacent/overlapping applications simply merge into one bigger region. Rolled as a random count in [min, max] at cast time.")]
         [SerializeField] [Min(0)] private int _objectsAttackBoardMin;
         [SerializeField] [Min(0)] private int _objectsAttackBoardMax = 1;
-        [SerializeField] private DestroyAreaShape _destroyArea = DestroyAreaShape.Single1x1;
-        [Tooltip("Only used when Destroy Area is Special. Cell offsets from the anchor (0,0 = the anchor cell itself).")]
+        [SerializeField] private DestroyAreaShape _destroyArea = DestroyAreaShape.Block;
+        [Tooltip("Only used when Destroy Area is Block. Size of the N x N square, 1-7. Always CENTERED on the chosen anchor tile: odd sizes (1,3,5,7) center exactly on that tile; even sizes (2,4,6) have no single center tile, so the object's flight target is nudged to the true geometric midpoint instead (see AttackVisualController.PlayBoardDestroyAttack) — the destroyed cells themselves still form a full N x N block either way.")]
+        [SerializeField] [Range(1, 7)] private int _blockSize = 3;
+        [Tooltip("Only used when Destroy Area is Special. Cell offsets from the anchor — (0,0) is the anchor cell itself, treated as the center of whatever custom shape you're building.")]
         [SerializeField] private List<Vector2Int> _specialShapeOffsets = new List<Vector2Int>();
+
+        [Header("Board-Destroy Visual — Tiles Skill only")]
+        [Tooltip("Prefab flown into the board for THIS skill's board-destroy objects (see AttackProjectileView — drag any prefab built from that component; its own Flight Duration field controls this skill's object speed). Leave empty to use Attack Visual Controller's own default board-destroy prefab instead.")]
+        [SerializeField] private AttackProjectileView _boardObjectPrefab;
+        [Tooltip("Extra world-space offset added on top of the caster's normal projectile spawn point, for THIS skill's board-destroy objects only — e.g. a positive Y to make them fall from higher up. (0,0,0) = spawn exactly at the caster's usual point.")]
+        [SerializeField] private Vector3 _boardObjectSpawnOffset;
 
         public string DisplayName => _displayName;
         public string Description => _description;
@@ -100,6 +109,12 @@ namespace Match3.Battle.Skills
         public int ObjectsAttackBoardMin => _objectsAttackBoardMin;
         public int ObjectsAttackBoardMax => _objectsAttackBoardMax;
         public DestroyAreaShape DestroyArea => _destroyArea;
+        public int BlockSize => _blockSize;
         public IReadOnlyList<Vector2Int> SpecialShapeOffsets => _specialShapeOffsets;
+        public AttackProjectileView BoardObjectPrefab => _boardObjectPrefab;
+        public Vector3 BoardObjectSpawnOffset => _boardObjectSpawnOffset;
+
+        /// <summary>True when Destroy Area is an even-sized Block (2/4/6) — these have no single center tile, so the visual target needs nudging to the true midpoint. See <see cref="Match3.Battle.View.AttackVisualController.PlayBoardDestroyAttack"/>.</summary>
+        public bool NeedsEvenBlockCenterOffset => _destroyArea == DestroyAreaShape.Block && _blockSize % 2 == 0;
     }
 }

@@ -14,7 +14,7 @@ namespace Match3.Battle.Buffs
         /// <summary>All HP/VHP healing on the target is reduced to 0 while active.</summary>
         RecoveryBlock,
 
-        /// <summary>Locks skill casting (and any future transformation mechanic) for the target. No consumer yet — the Skill System hasn't been built.</summary>
+        /// <summary>Locks skill casting (and any future transformation mechanic) for the target. Checked by <see cref="Match3.Battle.Gameplay.BattleController.CanCastSkill"/>; no consumer yet for a transformation mechanic, since none exists.</summary>
         Silences,
 
         /// <summary>Clears all current negative buffs and grants immunity to negative buffs and all incoming damage. Positive, targets Self.</summary>

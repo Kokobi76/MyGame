@@ -27,9 +27,11 @@ MonoBehaviour:
   _attackRange: 0
   _rangedObjectCount: 1
   _objectsAttackOpponentMin: 0
-  _objectsAttackOpponentMax: 2
+  _objectsAttackOpponentMax: 1
   _objectsAttackBoardMin: 1
   _objectsAttackBoardMax: 3
-  _destroyArea: 3
-  _specialShapeOffsets:
-  - {x: 1, y: 0}
+  _destroyArea: 0
+  _blockSize: 3
+  _specialShapeOffsets: []
+  _boardObjectPrefab: {fileID: 1163455722520660304, guid: 19334824f7870ff40a9fc5e540283a92, type: 3}
+  _boardObjectSpawnOffset: {x: 0, y: 0, z: 0}

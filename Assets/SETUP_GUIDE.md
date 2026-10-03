@@ -426,7 +426,7 @@ Stun **không** tick theo cơ chế Turn chung ở trên — nếu tick chung, S
 
 - **Invincible**: khi áp dụng, xoá sạch mọi debuff/negative buff hiện có trên người đó, và trong lúc còn hiệu lực thì mọi debuff mới bị chặn thẳng, mọi damage nhận vào (kể cả damage phạt do hết giờ) đều = 0.
 - **Recovery Block**: trong lúc còn hiệu lực, `HealHp`/`HealVhp` gọi vào coi như không có gì xảy ra (0 điểm hồi).
-- **Silences**: đã có cờ `HasControlBuff(ControlBuffType.Silences)` để tra, nhưng **chưa có nơi nào đọc nó** — chờ Skill System (khoá kỹ năng) mới dùng tới.
+- **Silences**: đã có cờ `HasControlBuff(ControlBuffType.Silences)` để tra — Phần 7.13 nối vào `BattleController.CanCastSkill` (giờ Skill System đã có, đọc phần đó để biết chi tiết).
 
 ## 6.5. Tạo buff asset & test thử
 
@@ -543,3 +543,88 @@ Damage Modifiers và Buffs to Apply tái dùng picker asset `StatModifier`/`Buff
 - **`BoardController.DestroyPositionsRoutine`**: đổi từ "tách 1 hàm dùng chung với `ResolveCascadeRoutine`" sang **hoàn toàn độc lập, tự chứa toàn bộ logic riêng** — `ResolveCascadeRoutine` gốc giờ không bị đụng tới 1 dòng nào.
 - **`AttackAction.BypassesShield`**: đổi từ tham số constructor sang **property set sau khi tạo** — để constructor gốc không đổi chữ nào.
 - Thêm UI test (`Skill Slot View`) và Skill Loadout (tối đa 3 slot) theo yêu cầu — xem 7.5, 7.8.
+
+## 7.12. Sửa lỗi sau khi bạn test
+
+### a. Lỗi compile `CharacterConfig` không có `SwordrainDamage`/`SlashDamage`
+
+Đây là **bug có sẵn từ Phần 5**, không phải do phần Skill: lúc Phần 5 tách Stats System (Primal → Main → Battle), 2 field này bị xoá khỏi `CharacterConfig` (chuyển sang tính ở `CharacterState`), nhưng `BattleController.MoveTimer_Expired` (phạt damage khi Player hết giờ) quên cập nhật theo, vẫn gọi `_enemyConfig.SwordrainDamage`/`SlashDamage` → không compile được. Đã sửa 1 dòng: đổi sang `_enemyState.SwordrainDamage`/`_enemyState.SlashDamage` (đúng nguồn dữ liệu mọi chỗ khác trong code đang dùng, kể cả có buff-aware).
+
+### b. Destroy Area bị hụt phạm vi ở gần rìa board
+
+`DestroyAreaResolver` trước đó random neo (anchor) trong TOÀN BỘ ô đang có tile, kể cả những ô mà từ đó shape (VD 3x3) sẽ bị cắt bởi rìa board. Đã sửa: giờ chỉ random trong tập ô mà **toàn bộ shape chắc chắn nằm gọn trong board** — 1 ô sát rìa sẽ không bao giờ được chọn làm neo cho Block2x2/Block3x3/Special nếu shape đó từ ô này sẽ bị lòi ra ngoài. Row/Column/All không bị ảnh hưởng bởi vị trí neo (luôn full theo đúng nghĩa của chúng) nên không cần lọc.
+
+### c. Object bay vào bàn cờ khi Tiles Skill phá tile
+
+Trước đây tile bị Tiles Skill phá chỉ biến mất tại chỗ (dùng animation removal có sẵn), không có gì "bay vào". Đã thêm `AttackVisualController.PlayBoardDestroyAttack(...)` — bắn projectile (dùng lại pool có sẵn) từ nhân vật thi triển bay tới world-position của **từng ô neo** (1 object/neo, đúng số lần áp dụng shape đã roll — không phải 1 object/ô bị phá, vì 1 neo có thể phá nhiều ô cùng lúc theo shape), đợi bay xong hết rồi mới thật sự gọi phá tile (`BoardController.DestroyPositionsRoutine`). Cần gán field **Board View** trên `Attack Visual Controller` — xem mục 7.14 nếu bạn thấy vẫn không có gì bay ra (bản đầu tiên bỏ trống thì âm thầm không làm gì, đã sửa thành log Warning rõ ràng).
+
+### d. UI theo dõi Buff
+
+Thêm `BuffListView` (`Match3.Battle.UI`) — liệt kê buff/debuff đang active trên 1 bên: tên, số lượt/cycle còn lại (nếu có), số stack (nếu >1), tô màu đỏ/xanh theo Negative/Positive. Tự refresh qua event mới `BattleController.BuffsChanged` (bắn mỗi khi buff được áp, mỗi lần tick Turn/Cycle, hoặc Stun bị trừ lượt).
+
+**Setup**: tạo 1-2 GameObject UI (1 `TMP_Text`), add component **Buff List View**, gán `Battle Controller`, `Side`, `List Text`.
+
+### e. Nút skill bị kẹt disabled dù đủ điều kiện (đủ mana, đúng lượt cộng thêm)
+
+Đây là bug thật nhưng nằm ở **UI refresh, không phải turn-logic** — logic "1 skill/move" (mục 7.3, 7.7) đã đúng từ đầu. Nguyên nhân: `CanCastSkill` có 2 cờ "đang bận" (`_isCastingSkill`, `_isProcessingAttackQueue`) không có event riêng báo khi nào chúng vừa hết bận — nên lúc bận (VD đang chạy hết attack queue của skill cộng dồn từ collapse match 4+) thì UI đúng là disabled, nhưng khi hết bận thì không có gì báo cho `Skill Slot View` biết để enable lại, nút bị kẹt ở trạng thái cũ. Đã thêm: ngay khi 2 cờ trên vừa tắt (cuối `CastSkillRoutine` và cuối hàng đợi attack), bắn lại `CharacterStatsChanged` (không có stat nào thật sự đổi, chỉ dùng làm tín hiệu "kiểm tra lại đi") — mọi UI hiện tại vốn đã tự đọc state mới nhất mỗi lần nhận event này nên không cần sửa gì thêm ở `Skill Slot View`.
+
+## 7.13. Silences giờ đã có tác dụng
+
+Theo comment sẵn có trong `ControlBuffType.cs` ("chờ Skill System... mới dùng tới"), giờ Skill System đã có nên nối vào: `BattleController.CanCastSkill` giờ trả `false` nếu bên cast đang bị Control Buff `Silences` — tức là bị Silences thì không cast được skill nào cả (Buff/Opponent/Tiles Skill đều bị chặn như nhau), cho tới khi Silences hết hiệu lực. Không cần setup gì thêm — buff Silences bạn tạo qua `Buff Definition` (Category = Effect, Control Type = Silences) tự động có tác dụng này ngay khi áp dụng.
+
+## 7.14. Vẫn không thấy object bay vào bàn cờ? — thiếu 1 bước setup, giờ đã báo lỗi rõ
+
+Nguyên nhân thật sự: field mới `Board View` trên `Attack Visual Controller` (thêm ở mục 7.12.c) **cần được gán tay trong Inspector** — đây là field MỚI thêm vào component CŨ đã có sẵn trong scene của bạn, Unity không tự gán lại được, và trước đó nếu thiếu thì code chỉ **âm thầm bỏ qua** (không log gì) nên bạn không biết vì sao. Đã sửa: giờ nếu thiếu, Console sẽ hiện **Warning** rõ ràng ngay lúc cast Tiles Skill.
+
+**Việc bạn cần làm**: chọn GameObject có component `Attack Visual Controller`, kéo GameObject `Match3Board` (hoặc bất kỳ đâu bạn gán `Board View` gốc) vào field **Board View**. Xong bước này là object sẽ bay vào bàn cờ đúng như mong đợi.
+
+### Đồng thời bổ sung theo yêu cầu: prefab + tốc độ config được riêng từng chỗ
+
+- **`Attack Visual Controller`** giờ có 3 field prefab riêng biệt (trước đó chỉ 1 field `Projectile Prefab` dùng chung cho tất cả):
+  - `Projectile Prefab` — mặc định dùng chung (ranged Slash, và fallback cho 2 field dưới nếu bạn để trống).
+  - `Sword Projectile Prefab` — **mới**, để trống thì Sword vẫn dùng `Projectile Prefab` như cũ (không cần đổi gì nếu bạn chưa cần tách riêng); gán prefab khác vào đây thì Sword sẽ bay theo tốc độ/hình dáng của prefab đó, độc lập với Slash.
+  - `Board Destroy Default Prefab` — **mới**, prefab mặc định cho object phá bàn cờ của Tiles Skill (nếu skill không tự gán prefab riêng — xem dưới), để trống thì dùng `Projectile Prefab`.
+- **`Skill Definition`** giờ có nhóm field mới "Board-Destroy Visual" (chỉ Tiles Skill dùng):
+  - `Board Object Prefab` — kéo prefab riêng cho skill này (ưu tiên cao nhất, đè lên `Board Destroy Default Prefab` của Attack Visual Controller). Để trống thì dùng prefab mặc định của Attack Visual Controller.
+  - `Board Object Spawn Offset` — lệch thêm (world unit) so với điểm bắn mặc định của nhân vật, riêng cho skill này (VD để object rơi từ trên cao xuống thay vì bay ngang từ nhân vật).
+- **Tốc độ bay** của bất kỳ prefab nào đều chỉnh trực tiếp trên field `Flight Duration` của component `Attack Projectile View` **trên chính prefab đó** (không phải trên Skill Definition hay Attack Visual Controller) — mỗi prefab độc lập, nên bạn có thể tạo nhiều prefab projectile khác nhau (nhanh/chậm, hình dạng khác nhau) rồi gán vào đúng chỗ cần.
+
+Không cần đổi gì nếu bạn chưa muốn tách riêng — mọi thứ vẫn hoạt động như cũ (dùng chung `Projectile Prefab`) nếu bạn không gán 3 field mới nói trên.
+
+### Log vị trí bắn (để debug)
+
+Console giờ tự in ra (không cần bật/tắt gì):
+- Lúc resolve xong Destroy Area: `[TilesSkill] "<tên skill>" (<shape>) resolved N anchor(s) -> M cell(s) to destroy. Anchors: [(x,y), ...]`.
+- Mỗi lần 1 object thật sự bắn ra: `[TilesSkill] Object i/N firing from <world pos> to cell (x,y) (world <world pos>)`.
+
+Lọc theo chữ `[TilesSkill]` trong Console để chỉ xem log của phần này.
+
+## 7.15. Sửa: neo phải là TÂM của vùng nổ, không phải góc — và mở rộng 1x1 → 7x7
+
+Bug thật: bản trước `AddBlock` coi ô được chọn là góc dưới-trái rồi mở rộng lên/phải, nên 1 ô sát rìa vẫn "fit" được nhưng vùng nổ thực tế lệch hẳn khỏi ô đó (không phải nổ đối xứng quanh ô được chọn). Đã sửa hoàn toàn cách tính:
+
+- Gộp `Single1x1`/`Block2x2`/`Block3x3` thành **1 shape `Block`** + field mới `Block Size` (Inspector slider 1-7) trên `Skill Definition` — chọn cỡ tự do thay vì cứng từng loại. **Asset cũ đã dùng Single1x1/Block2x2/Block3x3 sẽ hiện Destroy Area = Block với Block Size mặc định (3) — vào lại chỉnh Block Size đúng ý bạn.**
+- Công thức mới (`DestroyAreaResolver.GetLowerExtent`): `lower = (size - 1) / 2` (chia lấy phần nguyên) — dùng để mở rộng `lower` ô về phía dưới/trái và phần còn lại về phía trên/phải, tính từ ô neo.
+  - **Size lẻ (1,3,5,7)**: `lower` chẵn đúng 1 nửa mỗi bên → ô neo **là chính giữa** vùng nổ. VD 3x3: neo -1 tới neo +1 mỗi trục, ô neo là tâm.
+  - **Size chẵn (2,4,6)**: không có ô-tâm nào cả (tâm thật nằm giữa 4 ô) → vùng nổ vẫn đủ NxN ô, nhưng **object bay tới điểm giữa hình học** (nửa đường giữa ô neo và ô neo+(1,1)) thay vì bay thẳng vào ô neo — xem `AttackVisualController.GetEvenBlockCenterWorldPosition`. Log Console (mục trên) sẽ ghi thêm `[even-block center, nudged between tiles]` để bạn phân biệt.
+- Việc chọn ô neo (`GetValidAnchors`/`FitsBlock`) cũng đổi theo công thức trên — 1 ô sát rìa giờ **chỉ được chọn làm neo nếu toàn bộ NxN thực sự nằm gọn trong board tính từ tâm đó** (không còn tình trạng neo hợp lệ nhưng vùng nổ lại lệch).
+- **Special**: không đổi gì — offset (0,0) trong list bạn tự thiết lập vẫn chính là ô neo, object vẫn bay thẳng vào đó, đúng như bạn hiểu.
+- **Row/Column/All**: không liên quan tới centering (luôn full theo đúng nghĩa của chúng) nên không đổi.
+
+## 7.16. Sửa: match 4+ dạng L/T không được tính thêm lượt
+
+Bug thật, nằm ở `BattleResolveProcessor` (không phải core `MatchFinder` — file đó vẫn đúng, tự nó đã trả về đúng 2 group riêng cho hình L/T, chia sẻ 1 ô góc, y như comment sẵn có trong `MatchSearchResult.cs` mô tả). Vấn đề là `CountExtraMoveMatches` (chỗ quyết định có +1 lượt hay không) trước đó chỉ check TỪNG group riêng lẻ có ≥ `Extra Turn Match Length` (mặc định 4) ô hay không — 1 hình L/T ghép từ 2 match-3 (ngang + dọc) chung nhau đúng 1 ô góc thì mỗi group chỉ có 3 ô, không group nào đạt 4, dù tổng số ô riêng biệt của cả hình là 5 (3+3-1 ô chung).
+
+Đã sửa: `CountExtraMoveMatches` giờ **gộp các group nào có chung ít nhất 1 ô lại thành 1 "cụm"** (dùng union các vị trí), rồi tính tổng số ô riêng biệt của cả cụm đó — hình L/T/dấu cộng (+)... dù ghép từ bao nhiêu group ngắn cũng được tính như 1 hình liền, đúng tổng số ô nó chiếm. Match thẳng hàng bình thường (1 group, không chung ô với ai) không bị ảnh hưởng gì — vẫn tính y như trước.
+
+Vẫn giữ nguyên tinh thần "1 lượt có thể được +nhiều lượt": nếu trong 1 lượt xuất hiện nhiều CỤM tách biệt nhau (không chung ô nào) mà mỗi cụm đều đạt ngưỡng, mỗi cụm vẫn tính riêng +1 lượt như từ trước tới giờ — chỉ có cách nhóm 1 hình L/T lại là đổi, không đổi quy tắc cộng dồn nhiều lượt.
+
+## 7.17. Sửa: phát nổ của Tiles Skill không được tự cộng lượt — chỉ collapse tự nhiên sau đó mới tính
+
+Bug thật: `BoardController.DestroyPositionsRoutine` bắn `MatchesResolved` cho **cả 2 việc** — (1) đợt phá tile ban đầu do skill gây ra, và (2) mọi match tự nhiên phát sinh từ collapse/refill sau đó — và `BoardController_MatchesResolved` cộng `ExtraMovesEarned` cho **cả 2** như nhau, nên đợt phá ban đầu của skill (nếu đủ 4+ ô) cũng tự động +1 lượt, dù không phải người chơi tự match gì cả.
+
+Đã sửa — thêm cờ `_isResolvingForcedDestroyPass` trong `BattleController` (không đụng gì tới `BoardController`/`BattleResolveProcessor`):
+- Bật cờ này ngay trước khi gọi `DestroyPositionsRoutine`.
+- `BoardController_MatchesResolved` tắt cờ ngay khi nhận được lần bắn **đầu tiên** sau đó (chính là đợt phá do skill) — lần này không cộng `ExtraMovesEarned` vào `_extraMovesEarnedThisTurn`, nhưng **HP/VHP/Mana/Shield/Slash/Sword vẫn áp dụng bình thường** (tile HP vẫn hồi máu, Sword/Slash vẫn gây damage, v.v. — chỉ riêng phần cộng lượt bị bỏ).
+- Mọi lần bắn **sau đó** trong cùng lượt skill (tức collapse/cascade tự nhiên từ refill) không còn bị cờ này chi phối nữa — cộng lượt bình thường như match thật, đúng ý bạn.
+- Có thêm 1 dòng reset cờ an toàn ngay sau khi `DestroyPositionsRoutine` chạy xong, phòng trường hợp hiếm (các ô định phá hoá ra đã trống sẵn nên không có gì để bắn `MatchesResolved`) — tránh cờ bị "kẹt" rồi ảnh hưởng nhầm sang 1 match không liên quan ở lượt sau.

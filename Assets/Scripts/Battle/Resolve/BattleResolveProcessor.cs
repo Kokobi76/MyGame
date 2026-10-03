@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using UnityEngine;
 using Match3.Matching;
 using Match3.Battle.Data;
 using Match3.Battle.Model;
@@ -73,18 +74,79 @@ namespace Match3.Battle.Resolve
             return counts;
         }
 
-        /// <summary>Counts every match group that reaches the extra-turn length — a single move can earn more than one (a multi-group cascade step, or several 4+ matches across a cascade).</summary>
+        /// <summary>
+        /// Counts how many DISTINCT match "clusters" in this resolve step
+        /// reach the extra-turn length. A cluster is one or more
+        /// MatchGroups merged together wherever they overlap (share at
+        /// least one board position) — this matters because an L or T
+        /// shape is represented internally as two separate runs sharing a
+        /// corner tile (see <see cref="MatchSearchResult"/>'s own
+        /// remarks: "an L or T shaped match shares a corner tile between
+        /// two groups"), each of which can be SHORTER than the extra-turn
+        /// length on its own (e.g. two 3-runs sharing a corner = 5
+        /// distinct tiles total) while the shape AS A WHOLE clearly
+        /// reaches or exceeds it. Judging each raw group in isolation
+        /// would silently deny the bonus to exactly these L/T/plus-shaped
+        /// matches, which is the bug this fixes — a straight row/column
+        /// match-4+ (a single group, nothing to merge) is judged exactly
+        /// as before. A single move can still earn more than one extra
+        /// turn if multiple SEPARATE (non-overlapping) clusters each
+        /// independently reach the threshold — e.g. two unrelated
+        /// match-4s elsewhere on the board in the same cascade step.
+        /// </summary>
         private int CountExtraMoveMatches(MatchSearchResult matchResult)
         {
+            List<HashSet<Vector2Int>> clusters = BuildClusters(matchResult.Groups);
+
             int count = 0;
-            foreach (MatchGroup group in matchResult.Groups)
+            foreach (HashSet<Vector2Int> cluster in clusters)
             {
-                if (group.Positions.Count >= _tuning.ExtraTurnMatchLength)
+                if (cluster.Count >= _tuning.ExtraTurnMatchLength)
                 {
                     count++;
                 }
             }
             return count;
+        }
+
+        /// <summary>Merges MatchGroups that share at least one board position into connected clusters (each cluster is the union of every overlapping group's positions), so an L/T/plus shape is judged as the single combined shape it visually is, rather than as several short, separate runs.</summary>
+        private static List<HashSet<Vector2Int>> BuildClusters(IReadOnlyList<MatchGroup> groups)
+        {
+            List<HashSet<Vector2Int>> clusters = new List<HashSet<Vector2Int>>();
+
+            foreach (MatchGroup group in groups)
+            {
+                HashSet<Vector2Int> groupPositions = new HashSet<Vector2Int>(group.Positions);
+
+                List<HashSet<Vector2Int>> overlappingClusters = new List<HashSet<Vector2Int>>();
+                foreach (HashSet<Vector2Int> cluster in clusters)
+                {
+                    if (cluster.Overlaps(groupPositions))
+                    {
+                        overlappingClusters.Add(cluster);
+                    }
+                }
+
+                if (overlappingClusters.Count == 0)
+                {
+                    clusters.Add(groupPositions);
+                    continue;
+                }
+
+                // Merge this group, and every cluster it touches, into
+                // one — covers the rare case where a single new group
+                // bridges two previously-separate clusters together
+                // (e.g. a plus-shape's 4 arms found as 2 groups each).
+                HashSet<Vector2Int> mergedCluster = overlappingClusters[0];
+                mergedCluster.UnionWith(groupPositions);
+                for (int i = 1; i < overlappingClusters.Count; i++)
+                {
+                    mergedCluster.UnionWith(overlappingClusters[i]);
+                    clusters.Remove(overlappingClusters[i]);
+                }
+            }
+
+            return clusters;
         }
 
         private void ApplyHpHeal(IReadOnlyDictionary<TileKind, int> counts, CharacterState character, BattleResolveOutcome outcome)

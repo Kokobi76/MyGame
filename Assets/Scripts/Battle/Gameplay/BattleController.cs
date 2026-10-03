@@ -54,7 +54,9 @@ namespace Match3.Battle.Gameplay
     /// Also resolves Skill casts via <see cref="TryCastSkill"/> — Buff
     /// application, direct opponent damage (reusing the same
     /// attack-queue pipeline as tile-triggered Slash/Sword), and Tiles
-    /// Skill board destruction (via <see cref="BoardController.DestroyPositionsRoutine"/>)
+    /// Skill board destruction (visual via
+    /// <see cref="AttackVisualController.PlayBoardDestroyAttack"/>, then
+    /// the actual clear via <see cref="BoardController.DestroyPositionsRoutine"/>)
     /// — sharing the same Mana bookkeeping and, for Opponent/Tiles Skill,
     /// the same turn-completion path as a normal move. Each side's active
     /// skills come from its own <see cref="SkillLoadout"/> (up to 3 slots,
@@ -121,6 +123,9 @@ namespace Match3.Battle.Gameplay
         // bookkeeping is needed at all.
         private bool _isCastingSkill;
 
+        /// <summary>Marks exactly the one upcoming MatchesResolved firing that corresponds to a Tiles Skill's own forced board-destroy (as opposed to a natural match), so BoardController_MatchesResolved knows to skip extra-move credit for that single pass — see the remarks there.</summary>
+        private bool _isResolvingForcedDestroyPass;
+
         public CharacterState PlayerState => _playerState;
         public CharacterState EnemyState => _enemyState;
         public TurnCycleTracker TurnTracker => _turnTracker;
@@ -132,6 +137,9 @@ namespace Match3.Battle.Gameplay
         public event Action<BattleSide> CharacterStatsChanged;
         public event Action<BattleSide> BattleEnded;
         public event Action<BattleSide, SkillDefinition> SkillCast;
+
+        /// <summary>Fired whenever a side's active-buff list could have changed — a buff applied, any Turn/Cycle tick, or a Stun charge consumed. Purely a UI refresh signal (see <see cref="Match3.Battle.UI.BuffListView"/>); nothing in gameplay depends on it.</summary>
+        public event Action<BattleSide> BuffsChanged;
 
         private void Awake()
         {
@@ -221,6 +229,7 @@ namespace Match3.Battle.Gameplay
         public void ApplyBuff(BattleSide targetSide, BuffDefinition definition, BattleSide sourceSide)
         {
             GetCharacter(targetSide).Buffs.Apply(definition, GetCharacter(sourceSide));
+            OnBuffsChanged(targetSide);
         }
 
         /// <summary>The side's assigned active-skill bar (up to 3 slots), or null if that side has none assigned. Read by <see cref="Match3.Battle.UI.SkillSlotView"/>.</summary>
@@ -253,12 +262,13 @@ namespace Match3.Battle.Gameplay
         /// <paramref name="skill"/> right now: it must be their turn, the
         /// battle must still be going, nothing else may currently be
         /// resolving (another skill cast, an attack sequence, or the
-        /// board itself being mid-swap/mid-cascade), and if the skill
-        /// requires Mana they must have enough. There is no separate
-        /// "already used a skill this turn" check — see the field remarks
-        /// on <see cref="_isCastingSkill"/> for why that's unnecessary.
-        /// Exposed publicly so UI (e.g. a skill button) can grey itself
-        /// out without needing to duplicate this logic.
+        /// board itself being mid-swap/mid-cascade), the caster must not
+        /// be Silenced, and if the skill requires Mana they must have
+        /// enough. There is no separate "already used a skill this turn"
+        /// check — see the field remarks on <see cref="_isCastingSkill"/>
+        /// for why that's unnecessary. Exposed publicly so UI (e.g. a
+        /// skill button) can grey itself out without needing to duplicate
+        /// this logic.
         /// </summary>
         public bool CanCastSkill(BattleSide casterSide, SkillDefinition skill)
         {
@@ -276,6 +286,10 @@ namespace Match3.Battle.Gameplay
             }
 
             CharacterState caster = GetCharacter(casterSide);
+            if (caster.Buffs.HasControlBuff(ControlBuffType.Silences))
+            {
+                return false;
+            }
             if (skill.RequiresMana && caster.Mana < skill.ManaCost)
             {
                 return false;
@@ -334,7 +348,22 @@ namespace Match3.Battle.Gameplay
             CharacterState actingCharacter = GetCharacter(actingSide);
 
             BattleResolveOutcome outcome = _resolveProcessor.Resolve(matchResult, actingSide, actingCharacter);
-            _extraMovesEarnedThisTurn += outcome.ExtraMovesEarned;
+
+            // A Tiles Skill's own forced board-destroy (see CastSkillRoutine)
+            // should never itself grant an extra turn — only a genuinely
+            // NATURAL match should, including one the skill's own refill
+            // happens to cascade into afterward. _isResolvingForcedDestroyPass
+            // marks exactly the one MatchesResolved firing that corresponds
+            // to that initial forced destroy (set right before
+            // DestroyPositionsRoutine is called, cleared the instant this
+            // method sees it) — every other firing, including any natural
+            // cascade that SAME destroy sets off, earns extra moves as
+            // normal. HP/VHP/Mana/Shield/Slash/Sword effects from the
+            // forced destroy are unaffected either way — only the extra
+            // move credit from this one pass is discarded.
+            int extraMovesFromThisPass = _isResolvingForcedDestroyPass ? 0 : outcome.ExtraMovesEarned;
+            _isResolvingForcedDestroyPass = false;
+            _extraMovesEarnedThisTurn += extraMovesFromThisPass;
 
             OnCharacterStatsChanged(actingSide);
             SpawnInstantEffectFloatingText(actingSide, outcome);
@@ -398,6 +427,14 @@ namespace Match3.Battle.Gameplay
             }
 
             _isProcessingAttackQueue = false;
+
+            // The attack queue draining is one of CanCastSkill's "busy"
+            // conditions — nothing else notifies UI the instant it clears,
+            // so a skill button could stay stuck disabled even once
+            // casting becomes legal again. This re-uses CharacterStatsChanged
+            // purely as a "please re-check" signal; every current
+            // subscriber just re-reads live state on any firing.
+            NotifySkillCastabilityMayHaveChanged();
         }
 
         private IEnumerator PlayAttack(AttackAction attack)
@@ -466,10 +503,15 @@ namespace Match3.Battle.Gameplay
                 return;
             }
 
-            // int penaltyDamage = Mathf.RoundToInt(Mathf.Max(_enemyConfig.SwordrainDamage, _enemyConfig.SlashDamage));
-            // _playerState.TakeUnblockableDamage(penaltyDamage);
-            // OnCharacterStatsChanged(BattleSide.Player);
-            // _floatingText.Spawn(_attackVisuals.GetView(BattleSide.Player).TargetPoint, FloatingTextKind.Damage, penaltyDamage);
+            // Reads from _enemyState (derived, buff-aware Battle Stats),
+            // NOT _enemyConfig — CharacterConfig stopped exposing
+            // Swordrain/Slash Damage back when Phase 5's Primal -> Main
+            // stat derivation was introduced (see SETUP_GUIDE Part 5);
+            // this call site was missed at the time and would not compile.
+            int penaltyDamage = Mathf.RoundToInt(Mathf.Max(_enemyState.SwordrainDamage, _enemyState.SlashDamage));
+            _playerState.TakeUnblockableDamage(penaltyDamage);
+            OnCharacterStatsChanged(BattleSide.Player);
+            _floatingText.Spawn(_attackVisuals.GetView(BattleSide.Player).TargetPoint, FloatingTextKind.Damage, penaltyDamage);
 
             if (_playerState.IsDefeated)
             {
@@ -494,13 +536,15 @@ namespace Match3.Battle.Gameplay
         /// list is skipped, per the doc's "Tiles Skill only creates
         /// Debuff" rule), queues and plays out any direct-damage attacks
         /// (reusing the normal attack queue), then — for a Tiles Skill
-        /// with any Objects-Attack-Board roll — destroys the resolved
-        /// Destroy Area on the board and waits for whatever that triggers
-        /// to settle. Turn completion is decided last: a free (Buff
-        /// Skill) cast never touches the turn tracker at all; Destroy
-        /// Area = All always force-advances (and wipes banked extra
-        /// moves) regardless of Category, per the doc; otherwise the
-        /// skill's own (Category-fixed) Costs Move flag decides.
+        /// with any Objects-Attack-Board roll — plays the board-destroy
+        /// objects flying in (<see cref="AttackVisualController.PlayBoardDestroyAttack"/>)
+        /// before actually destroying that Destroy Area on the board and
+        /// waiting for whatever that triggers to settle. Turn completion
+        /// is decided last: a free (Buff Skill) cast never touches the
+        /// turn tracker at all; Destroy Area = All always force-advances
+        /// (and wipes banked extra moves) regardless of Category, per the
+        /// doc; otherwise the skill's own (Category-fixed) Costs Move
+        /// flag decides.
         /// </summary>
         private IEnumerator CastSkillRoutine(BattleSide casterSide, SkillDefinition skill)
         {
@@ -548,12 +592,17 @@ namespace Match3.Battle.Gameplay
 
             if (!_isBattleOver && skill.Category == SkillCategory.TilesSkill)
             {
-                HashSet<Vector2Int> destroyPositions = DestroyAreaResolver.ResolveBoardDestroyPositions(skill, _boardController.Board);
-                if (destroyPositions.Count > 0)
+                TilesSkillDestroyPlan destroyPlan = DestroyAreaResolver.ResolveDestroyPlan(skill, _boardController.Board);
+                if (destroyPlan.Positions.Count > 0)
                 {
+                    Debug.Log($"[TilesSkill] \"{skill.DisplayName}\" ({skill.DestroyArea}) resolved {destroyPlan.Anchors.Count} anchor(s) -> {destroyPlan.Positions.Count} cell(s) to destroy. Anchors: [{string.Join(", ", destroyPlan.Anchors)}]", this);
                     forcedFullBoardClear = skill.DestroyArea == DestroyAreaShape.All;
 
-                    yield return _boardController.DestroyPositionsRoutine(new List<Vector2Int>(destroyPositions));
+                    yield return _attackVisuals.PlayBoardDestroyAttack(casterSide, destroyPlan.Anchors, skill.NeedsEvenBlockCenterOffset, skill.BoardObjectPrefab, skill.BoardObjectSpawnOffset);
+
+                    _isResolvingForcedDestroyPass = true;
+                    yield return _boardController.DestroyPositionsRoutine(new List<Vector2Int>(destroyPlan.Positions));
+                    _isResolvingForcedDestroyPass = false; // safety net: clears even if no MatchesResolved ended up firing (e.g. the positions turned out already empty by the time the routine ran), so the flag can never leak into some later, unrelated resolve pass
 
                     // The forced destroy (and any natural cascade it set
                     // off) may itself have enqueued Slash/Sword attacks
@@ -589,6 +638,15 @@ namespace Match3.Battle.Gameplay
             }
 
             _isCastingSkill = false;
+
+            // Same reasoning as ProcessAttackQueueRoutine's own trailing
+            // call — _isCastingSkill just cleared, which is itself one of
+            // CanCastSkill's gates, so anything gating on it (e.g. a
+            // skill button re-enabling after this cast, especially when
+            // it granted an extra move and the SAME side can act again
+            // right away) needs a fresh signal now that it's actually
+            // legal again.
+            NotifySkillCastabilityMayHaveChanged();
         }
 
         /// <summary>Builds this skill's direct-opponent-damage AttackActions, if any, from its Damage Modifiers — Opponent Skill uses its own configured Attack Range/object count, Tiles Skill rolls its Objects-Attack-Opponent range and always fires Ranged (it has no Melee option). Buff Skill (or any skill with no Damage Modifiers configured) naturally produces none.</summary>
@@ -680,13 +738,15 @@ namespace Match3.Battle.Gameplay
 
             while (!_isBattleOver && iterations < maxIterations)
             {
-                BuffManager currentSideBuffs = GetCharacter(_turnTracker.CurrentSide).Buffs;
+                BattleSide sideToCheck = _turnTracker.CurrentSide;
+                BuffManager currentSideBuffs = GetCharacter(sideToCheck).Buffs;
                 if (!currentSideBuffs.HasControlBuff(ControlBuffType.Stun))
                 {
                     break;
                 }
 
                 currentSideBuffs.ConsumeStunCharge();
+                OnBuffsChanged(sideToCheck);
                 _turnTracker.ForceAdvanceTurn();
                 TickAllBuffsTurn();
                 iterations++;
@@ -715,12 +775,16 @@ namespace Match3.Battle.Gameplay
         {
             _playerState.Buffs.TickTurn();
             _enemyState.Buffs.TickTurn();
+            OnBuffsChanged(BattleSide.Player);
+            OnBuffsChanged(BattleSide.Enemy);
         }
 
         private void TickAllBuffsCycle()
         {
             _playerState.Buffs.TickCycle();
             _enemyState.Buffs.TickCycle();
+            OnBuffsChanged(BattleSide.Player);
+            OnBuffsChanged(BattleSide.Enemy);
         }
 
         private static AiDifficulty RollEnemyAiDifficulty()
@@ -772,6 +836,25 @@ namespace Match3.Battle.Gameplay
         private void OnSkillCast(BattleSide side, SkillDefinition skill)
         {
             SkillCast?.Invoke(side, skill);
+        }
+
+        private void OnBuffsChanged(BattleSide side)
+        {
+            BuffsChanged?.Invoke(side);
+        }
+
+        /// <summary>
+        /// Fires a CharacterStatsChanged notification with no underlying
+        /// stat change, purely so UI gating on CanCastSkill — which also
+        /// depends on busy-flags (_isCastingSkill, _isProcessingAttackQueue)
+        /// that have no dedicated event of their own — gets a chance to
+        /// re-evaluate the instant those flags clear. Every current
+        /// subscriber just re-reads live state on any firing, so this is
+        /// safe to call opportunistically.
+        /// </summary>
+        private void NotifySkillCastabilityMayHaveChanged()
+        {
+            OnCharacterStatsChanged(_turnTracker.CurrentSide);
         }
 
         private void UpdateDebugSnapshot(BattleSide side)
